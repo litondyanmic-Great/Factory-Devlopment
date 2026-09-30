@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control and section assignments",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "merchandising", "production", "store", "gpq", "ie", "operator"] },
+        "status": { "type": "string", "enum": ["active", "suspended", "pending"] },
+        "sections": { "type": "array" },
+        "adminAreas": { "type": "array" },
+        "canApproveYarnOverage": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "role", "status"]
+    },
+    "Style": {
+      "title": "Style",
+      "description": "Garment sweater style order record with production planning and specs",
+      "type": "object",
+      "properties": {
+        "styleNo": { "type": "string" },
+        "styleName": { "type": "string" },
+        "buyer": { "type": "string" },
+        "orderQty": { "type": "number" },
+        "gauge": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["styleNo", "buyer", "orderQty"]
+    },
+    "InventoryItem": {
+      "title": "InventoryItem",
+      "description": "Yarn or accessory warehouse item record",
+      "type": "object",
+      "properties": {
+        "itemCode": { "type": "string" },
+        "itemName": { "type": "string" },
+        "category": { "type": "string", "enum": ["yarn", "accessory", "packaging"] },
+        "currentStock": { "type": "number" },
+        "unit": { "type": "string" }
+      },
+      "required": ["itemCode", "itemName", "category"]
+    },
+    "Chalan": {
+      "title": "Chalan",
+      "description": "Gate pass delivery chalan record",
+      "type": "object",
+      "properties": {
+        "chalanNo": { "type": "string" },
+        "type": { "type": "string" },
+        "partyName": { "type": "string" },
+        "vehicleNo": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["chalanNo", "type", "partyName"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles indexed by auth UID"
+    },
+    "/styles/{styleId}": {
+      "schema": { "$ref": "#/entities/Style" },
+      "description": "Garment styles created in production system"
+    },
+    "/inventory/{itemId}": {
+      "schema": { "$ref": "#/entities/InventoryItem" },
+      "description": "Warehouse yarn and trims inventory master"
+    },
+    "/chalans/{chalanId}": {
+      "schema": { "$ref": "#/entities/Chalan" },
+      "description": "Factory delivery gate passes and chalans"
+    }
+  }
+}
