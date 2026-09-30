@@ -1,0 +1,1331 @@
+import { useEffect, useMemo, useState } from 'react';
+import {
+  addDoc,
+  arrayRemove,
+  arrayUnion,
+  collection,
+  collectionGroup,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  updateDoc,
+  where,
+} from 'firebase/firestore';
+import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2, ShieldAlert, Check, X, Link2, Plus } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { db } from '../../firebase';
+import { useAuth } from '../../context/AuthContext';
+import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal, InspectionBadge } from '../../components/ui';
+import ExportBar from '../../components/ExportBar';
+import StyleSearchSelect from '../../components/StyleSearchSelect';
+import {
+  BLOCKS,
+  STAGES,
+  can,
+  hasAreaAdmin,
+  isYarnOverageApprover,
+  suggestedInspectionQty,
+  INSPECTION_STATUS_LABELS,
+} from '../../lib/constants';
+import { useLang } from '../../lib/i18n';
+import {
+  getLocalStyles,
+  getLocalItems,
+  getLocalYarnLedger,
+  saveLocalYarnLedger,
+} from '../../lib/demoData';
+
+const LEDGER_LABELS = {
+  dyeingOrder: { bn: 'ডাইং অর্ডার', en: 'Dyeing Order' },
+  receipt: { bn: 'রিসিভড (চালান)', en: 'Received (Chalan)' },
+  issueToWinding: { bn: 'ওয়াইন্ডিং-এ ইস্যু', en: 'Issued to Winding' },
+  windingReceipt: { bn: 'ওয়াইন্ডিং-এ রিসিভ', en: 'Received in Winding' },
+  issueToKnitting: { bn: 'সরাসরি নিটিং-এ ইস্যু', en: 'Issued Direct to Knitting' },
+  windingToKnitting: { bn: 'ওয়াইন্ডিং থেকে নিটিং', en: 'Winding to Knitting' },
+  consumption: { bn: 'নিটিং-এ খরচ হয়েছে', en: 'Consumed in Knitting' },
+  blockAdjustIn: { bn: 'ব্লক সংশোধন (যোগ)', en: 'Block Adjustment (Add)' },
+  blockAdjustOut: { bn: 'ব্লক সংশোধন (বিয়োগ)', en: 'Block Adjustment (Remove)' },
+  sectionTransfer: { bn: 'সেকশন থেকে সেকশনে ট্রান্সফার', en: 'Section-to-Section Transfer' },
+  returnToSupplier: { bn: 'সাপ্লায়ারকে ফেরত', en: 'Returned to Supplier' },
+};
+
+// This ledger (styles/{id}/yarnLedger) is now the ONLY place yarn stock
+// movement is ever recorded — Item Detail and Inventory List both compute
+// their "current stock" numbers live from it (and from the equivalent
+// accessoryLedger). There used to be a second, separate stock counter on
+// the inventoryItems catalog doc that got out of sync with this ledger;
+// that's gone now, so there is exactly one source of truth and deleting
+// an entry here is immediately and automatically reflected everywhere.
+export default function StyleYarnTracking() {
+  const { user, profile } = useAuth();
+  const { t } = useLang();
+  const [searchParams] = useSearchParams();
+  const [styleId, setStyleId] = useState(() => searchParams.get('style') || '');
+  const [style, setStyle] = useState(null);
+  const [yarnItems, setYarnItems] = useState(() => getLocalItems().filter((i) => i.type === 'yarn'));
+  const [ledger, setLedger] = useState(null);
+
+  const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
+  const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
+  const [adjustForm, setAdjustForm] = useState({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
+  const [transferForm, setTransferForm] = useState({ yarnItemId: '', fromSection: 'knitting', toSection: 'linking', qty: '', date: today(), notes: '' });
+  const [returnForm, setReturnForm] = useState({ yarnItemId: '', block: '', qty: '', date: today(), reason: '' });
+  const [error, setError] = useState('');
+  const [issueNotice, setIssueNotice] = useState('');
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [pendingApprovals, setPendingApprovals] = useState(null);
+  const [approverBusyId, setApproverBusyId] = useState('');
+
+  const canApprove = isYarnOverageApprover(profile);
+
+  function today() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, 'inventoryItems'), (snap) =>
+      setYarnItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((i) => i.type === 'yarn'))
+    );
+    return unsub;
+  }, []);
+
+  // Cross-style pending yarn-issue-over-buffer approval requests, only for
+  // Higher Authority users (Admin/PD/MD/DGM) — they need to see this
+  // regardless of which style they currently have open, so this is a
+  // collectionGroup query across every style's yarnIssueApprovals.
+  useEffect(() => {
+    if (!canApprove) {
+      setPendingApprovals(null);
+      return;
+    }
+    const q = query(collectionGroup(db, 'yarnIssueApprovals'), where('status', '==', 'pending'));
+    const unsub = onSnapshot(q, (snap) =>
+      setPendingApprovals(snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() })))
+    );
+    return unsub;
+  }, [canApprove]);
+
+  useEffect(() => {
+    if (!styleId) {
+      setStyle(null);
+      setLedger(null);
+      return;
+    }
+    const localStyle = getLocalStyles().find((s) => s.id === styleId);
+    if (localStyle) setStyle(localStyle);
+    const localLedger = getLocalYarnLedger().filter((e) => e.styleId === styleId);
+    if (localLedger.length > 0) setLedger(localLedger);
+
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(
+        doc(db, 'styles', styleId),
+        (snap) => {
+          if (snap.exists()) setStyle({ id: snap.id, ...snap.data() });
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, [styleId]);
+
+  useEffect(() => {
+    if (!styleId) return;
+    let unsub = () => {};
+    try {
+      const q = query(collection(db, 'styles', styleId, 'yarnLedger'), orderBy('date', 'desc'));
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          if (!snap.empty) {
+            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setLedger(list);
+            saveLocalYarnLedger(list);
+          }
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, [styleId]);
+
+  // Per-yarn-item running balances, derived entirely from the ledger so
+  // deleting a wrong entry always keeps everything consistent.
+  const balances = useMemo(() => {
+    const map = new Map();
+    (ledger || []).forEach((e) => {
+      if (!map.has(e.yarnItemId)) {
+        map.set(e.yarnItemId, {
+          yarnItemName: e.yarnItemName,
+          ordered: 0,
+          received: 0,
+          issuedWinding: 0,
+          issuedKnitting: 0,
+          windingToKnitting: 0,
+          consumed: 0,
+          adjustIn: 0,
+          adjustOut: 0,
+          returned: 0,
+          pendingInspection: 0,
+        });
+      }
+      const b = map.get(e.yarnItemId);
+      const q = Number(e.qty || 0);
+      if (e.type === 'dyeingOrder') b.ordered += q;
+      if (e.type === 'receipt') {
+        const cleared = !e.inspectionStatus || e.inspectionStatus === 'passed' || e.inspectionStatus === 'approved';
+        if (cleared) b.received += q;
+        else b.pendingInspection += q;
+      }
+      if (e.type === 'issueToWinding') b.issuedWinding += q;
+      if (e.type === 'issueToKnitting') b.issuedKnitting += q;
+      if (e.type === 'windingToKnitting') b.windingToKnitting += q;
+      if (e.type === 'consumption') b.consumed += q;
+      if (e.type === 'blockAdjustIn') b.adjustIn += q;
+      if (e.type === 'blockAdjustOut') b.adjustOut += q;
+      if (e.type === 'returnToSupplier') b.returned += q;
+    });
+    return Array.from(map.entries()).map(([yarnItemId, b]) => ({
+      yarnItemId,
+      ...b,
+      balanceToReceive: b.ordered - b.received,
+      atStore: b.received + b.adjustIn - b.adjustOut - b.issuedWinding - b.issuedKnitting - b.returned,
+      atWinding: b.issuedWinding - b.windingToKnitting,
+      readyForKnitting: b.issuedKnitting + b.windingToKnitting - b.consumed,
+    }));
+  }, [ledger]);
+
+  // Per-section (knitting/linking/trimming/mending/sewing/etc.) yarn
+  // balance for a given yarn item — how much this style's yarn is
+  // currently sitting with each production section, so one section can
+  // only transfer onward what it actually still has. Knitting's starting
+  // balance is what it received minus what it has consumed; every other
+  // section starts at zero and only has what's been transferred to it.
+  const sectionBalancesFor = (yarnItemId) => {
+    const base = Object.fromEntries(STAGES.map((s) => [s.key, 0]));
+    const b = balances.find((x) => x.yarnItemId === yarnItemId);
+    if (b) base.knitting = b.readyForKnitting;
+    (ledger || [])
+      .filter((e) => e.yarnItemId === yarnItemId && e.type === 'sectionTransfer')
+      .forEach((e) => {
+        const q = Number(e.qty || 0);
+        base[e.fromSection] = (base[e.fromSection] || 0) - q;
+        base[e.toSection] = (base[e.toSection] || 0) + q;
+      });
+    return STAGES.map((s) => ({ section: s.key, label: s.label, labelEn: s.labelEn, qty: base[s.key] || 0 })).filter(
+      (s) => Math.abs(s.qty) > 0.001
+    );
+  };
+
+  // Per-block balance for a given yarn item: how much of THIS style's yarn
+  // is physically sitting in each block right now (received into that
+  // block, plus/minus manual reconciliation adjustments, minus whatever's
+  // already been issued out of that same block).
+  const blockBalancesFor = (yarnItemId) => {
+    const map = new Map();
+    (ledger || [])
+      .filter((e) => e.yarnItemId === yarnItemId)
+      .forEach((e) => {
+        const q = Number(e.qty || 0);
+        // A receipt only becomes issuable stock once QC has passed it (or
+        // a Quality Manager/Higher Authority approved it despite a
+        // flagged issue) — 'pending' and 'hold' contribute nothing here.
+        // Receipts from before this feature existed have no
+        // inspectionStatus at all, which is treated as already-cleared so
+        // old data/balances don't suddenly break.
+        const cleared = !e.inspectionStatus || e.inspectionStatus === 'passed' || e.inspectionStatus === 'approved';
+        if (e.type === 'receipt' && e.block && cleared) {
+          map.set(e.block, (map.get(e.block) || 0) + q);
+        }
+        if (e.type === 'blockAdjustIn' && e.block) {
+          map.set(e.block, (map.get(e.block) || 0) + q);
+        }
+        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut' || e.type === 'returnToSupplier') && e.block) {
+          map.set(e.block, (map.get(e.block) || 0) - q);
+        }
+      });
+    return Array.from(map.entries())
+      .map(([block, qty]) => ({ block, qty }))
+      .filter((b) => b.qty > 0.001);
+  };
+
+  // How much of a receipt is still awaiting inspection or on hold, purely
+  // for visibility (shown as a banner + in the ledger table) — this isn't
+  // subtracted from any other total, it's informational.
+  const pendingInspectionFor = (yarnItemId) =>
+    (ledger || []).filter(
+      (e) => e.yarnItemId === yarnItemId && e.type === 'receipt' && (e.inspectionStatus === 'pending' || e.inspectionStatus === 'hold')
+    );
+
+  const canManage = can(profile?.role, 'inventory:manage');
+
+  // Only the yarns actually linked to this style should show up in the
+  // Receive/Issue/Transfer/Return dropdowns — picking from the entire
+  // factory-wide yarn catalog every time is error-prone. If the style has
+  // no linked yarns configured yet (older styles), fall back to the full
+  // catalog so nothing breaks; once at least one yarn is linked, only
+  // linked yarns are offered.
+  const linkedYarnIds = Array.isArray(style?.yarnItemIds) ? style.yarnItemIds : [];
+  const styleYarnItems = linkedYarnIds.length > 0 ? yarnItems.filter((y) => linkedYarnIds.includes(y.id)) : yarnItems;
+  const [yarnPickerQuery, setYarnPickerQuery] = useState('');
+
+  async function linkYarnToStyle(yarnItemId) {
+    await updateDoc(doc(db, 'styles', styleId), { yarnItemIds: arrayUnion(yarnItemId) });
+    setYarnPickerQuery('');
+  }
+  async function unlinkYarnFromStyle(yarnItemId) {
+    await updateDoc(doc(db, 'styles', styleId), { yarnItemIds: arrayRemove(yarnItemId) });
+  }
+  // When the exact yarn name typed doesn't already exist in the factory's
+  // yarn catalog, create it (unit defaults to lb, the unit every yarn
+  // ledger entry here already uses) and link it to this style in one go —
+  // no need to leave this page to add a new yarn.
+  async function createAndLinkYarn(name) {
+    const clean = name.trim();
+    if (!clean) return;
+    const docRef = await addDoc(collection(db, 'inventoryItems'), {
+      name: clean,
+      type: 'yarn',
+      unit: 'lb',
+      createdBy: profile?.name || user?.email,
+      createdAt: serverTimestamp(),
+    });
+    await linkYarnToStyle(docRef.id);
+  }
+
+  const yarnPickerMatches = yarnPickerQuery.trim()
+    ? yarnItems.filter(
+        (y) => !linkedYarnIds.includes(y.id) && y.name.toLowerCase().includes(yarnPickerQuery.trim().toLowerCase())
+      )
+    : [];
+  const yarnPickerExactMatch = yarnItems.some((y) => y.name.trim().toLowerCase() === yarnPickerQuery.trim().toLowerCase());
+
+  async function addLedgerEntry(type, data) {
+    await addDoc(collection(db, 'styles', styleId, 'yarnLedger'), {
+      type,
+      styleNo: style?.styleNo || '',
+      styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+      ...data,
+      enteredBy: profile?.name || user?.email,
+      createdAt: serverTimestamp(),
+    });
+  }
+
+  async function handleReceive(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === receiveForm.yarnItemId);
+    if (!item || !receiveForm.qty) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!receiveForm.block) {
+      setError(t('এই চালান কোন ব্লকে রাখা হবে তা নির্বাচন করুন।', 'Select which block this chalan will be stored in.'));
+      return;
+    }
+    const n = Number(receiveForm.qty);
+    // Block is set right here, at receive time, in one step — no separate
+    // "assign a block later" page needed for the normal flow anymore.
+    await addLedgerEntry('receipt', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      chalanNo: receiveForm.chalanNo || '',
+      block: receiveForm.block,
+      date: receiveForm.date,
+      notes: receiveForm.notes || '',
+      // Every chalan starts life un-issuable until QC inspects a 10%
+      // sample and passes it — see blockBalancesFor(), which excludes
+      // anything not 'passed'/'approved' from issuable stock.
+      inspectionStatus: 'pending',
+      inspectionSuggestedQty: suggestedInspectionQty(n),
+    });
+    setReceiveForm({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
+  }
+
+  // Standard allowance for issuing yarn to Knitting: (order qty / 12) ×
+  // contact weight (lb per dozen) = the base requirement, +10% is allowed
+  // freely as normal wastage/buffer. Anything beyond that 110% needs a
+  // Higher Authority (Admin/PD/MD/DGM) to approve — see pendingApprovals.
+  const contactWeightBaseQty =
+    style && issueForm.contactWeight ? (Number(style.orderQty || 0) / 12) * Number(issueForm.contactWeight) : 0;
+  const contactWeightBufferQty = contactWeightBaseQty * 1.1;
+
+  async function handleIssue(e) {
+    e.preventDefault();
+    setError('');
+    setIssueNotice('');
+    const item = yarnItems.find((y) => y.id === issueForm.yarnItemId);
+    const n = Number(issueForm.qty);
+    if (!item || !n) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!issueForm.block) {
+      setError(t('কোন ব্লক থেকে ইয়ার্ন নেওয়া হচ্ছে তা নির্বাচন করুন।', 'Select which block this yarn is being taken from.'));
+      return;
+    }
+    const blockBal = blockBalancesFor(item.id).find((b) => b.block === issueForm.block)?.qty || 0;
+    if (n > blockBal + 0.001) {
+      setError(
+        t(
+          `ব্লক ${issueForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি ইস্যু করা যাবে না।`,
+          `Block ${issueForm.block} currently has ${blockBal.toFixed(2)} lb — cannot issue more than that.`
+        )
+      );
+      return;
+    }
+
+    const contactMeta =
+      issueForm.destination === 'knitting' && issueForm.contactWeight
+        ? {
+            contactWeight: Number(issueForm.contactWeight),
+            standardQty: Number(contactWeightBaseQty.toFixed(2)),
+            bufferQty: Number(contactWeightBufferQty.toFixed(2)),
+          }
+        : null;
+
+    // Over the standard+10% buffer -> this needs Higher Authority sign-off
+    // before the yarn actually leaves the store. File a request instead of
+    // issuing immediately.
+    if (contactMeta && n > contactMeta.bufferQty + 0.001) {
+      await addDoc(collection(db, 'styles', styleId, 'yarnIssueApprovals'), {
+        status: 'pending',
+        styleNo: style?.styleNo || '',
+        buyer: style?.buyer || '',
+        yarnItemId: item.id,
+        yarnItemName: item.name,
+        requestedQty: n,
+        block: issueForm.block,
+        destination: issueForm.destination,
+        date: issueForm.date,
+        notes: issueForm.notes || '',
+        ...contactMeta,
+        requestedBy: profile?.name || user?.email,
+        createdAt: serverTimestamp(),
+      });
+      setIssueNotice(
+        t(
+          `স্ট্যান্ডার্ড কনজাম্পশন (${contactMeta.standardQty} lb) + ১০% বাফার (${contactMeta.bufferQty} lb)-এর বেশি হওয়ায় এই ইস্যু সরাসরি হয়নি — হায়ার অথরিটি (Admin/PD/MD/DGM)-এর অনুমোদনের জন্য রিকোয়েস্ট পাঠানো হয়েছে।`,
+          `This exceeds standard consumption (${contactMeta.standardQty} lb) + 10% buffer (${contactMeta.bufferQty} lb), so it wasn't issued directly — a request has been sent for Higher Authority (Admin/PD/MD/DGM) approval.`
+        )
+      );
+      setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
+      return;
+    }
+
+    await addLedgerEntry(issueForm.destination === 'winding' ? 'issueToWinding' : 'issueToKnitting', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      block: issueForm.block,
+      date: issueForm.date,
+      notes: issueForm.notes || '',
+      ...(contactMeta || {}),
+    });
+    setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
+  }
+
+  async function handleApproveIssue(req) {
+    setApproverBusyId(req.id);
+    try {
+      await addDoc(collection(db, 'styles', req.styleId, 'yarnLedger'), {
+        type: req.destination === 'winding' ? 'issueToWinding' : 'issueToKnitting',
+        styleNo: req.styleNo || '',
+        yarnItemId: req.yarnItemId,
+        yarnItemName: req.yarnItemName,
+        qty: req.requestedQty,
+        block: req.block,
+        date: req.date,
+        notes: req.notes || '',
+        contactWeight: req.contactWeight,
+        standardQty: req.standardQty,
+        bufferQty: req.bufferQty,
+        approvedOverage: true,
+        approvedBy: profile?.name || user?.email,
+        enteredBy: req.requestedBy,
+        createdAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'styles', req.styleId, 'yarnIssueApprovals', req.id), {
+        status: 'approved',
+        approvedBy: profile?.name || user?.email,
+        approvedAt: serverTimestamp(),
+      });
+    } finally {
+      setApproverBusyId('');
+    }
+  }
+
+  async function handleRejectIssue(req) {
+    const reason = window.prompt(
+      t('বাতিলের কারণ লিখুন (ঐচ্ছিক):', 'Enter reason for rejection (optional):')
+    );
+    setApproverBusyId(req.id);
+    try {
+      await updateDoc(doc(db, 'styles', req.styleId, 'yarnIssueApprovals', req.id), {
+        status: 'rejected',
+        rejectedBy: profile?.name || user?.email,
+        rejectedAt: serverTimestamp(),
+        rejectionReason: reason || '',
+      });
+    } finally {
+      setApproverBusyId('');
+    }
+  }
+
+  async function handleAdjust(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === adjustForm.yarnItemId);
+    const n = Number(adjustForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!adjustForm.block) {
+      setError(t('ব্লক নির্বাচন করুন।', 'Select a block.'));
+      return;
+    }
+    if (adjustForm.direction === 'out') {
+      const blockBal = blockBalancesFor(item.id).find((b) => b.block === adjustForm.block)?.qty || 0;
+      if (n > blockBal + 0.001) {
+        setError(
+          t(
+            `ব্লক ${adjustForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি বিয়োগ করা যাবে না।`,
+            `Block ${adjustForm.block} currently has ${blockBal.toFixed(2)} lb — cannot remove more than that.`
+          )
+        );
+        return;
+      }
+    }
+    await addLedgerEntry(adjustForm.direction === 'in' ? 'blockAdjustIn' : 'blockAdjustOut', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      block: adjustForm.block,
+      date: adjustForm.date,
+      notes: adjustForm.reason || t('ম্যানুয়াল সংশোধন', 'Manual reconciliation'),
+    });
+    setAdjustForm({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
+  }
+
+  async function handleTransfer(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === transferForm.yarnItemId);
+    const n = Number(transferForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (transferForm.fromSection === transferForm.toSection) {
+      setError(t('একই সেকশনে ট্রান্সফার করা যাবে না।', 'Cannot transfer within the same section.'));
+      return;
+    }
+    const fromBal = sectionBalancesFor(item.id).find((s) => s.section === transferForm.fromSection)?.qty || 0;
+    if (n > fromBal + 0.001) {
+      setError(
+        t(
+          `${transferForm.fromSection}-এ বর্তমানে ${fromBal.toFixed(2)} lb আছে, এর বেশি ট্রান্সফার করা যাবে না।`,
+          `${transferForm.fromSection} currently has ${fromBal.toFixed(2)} lb — cannot transfer more than that.`
+        )
+      );
+      return;
+    }
+    await addLedgerEntry('sectionTransfer', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      fromSection: transferForm.fromSection,
+      toSection: transferForm.toSection,
+      qty: n,
+      date: transferForm.date,
+      notes: transferForm.notes || '',
+    });
+    setTransferForm({ yarnItemId: '', fromSection: 'knitting', toSection: 'linking', qty: '', date: today(), notes: '' });
+  }
+
+  async function handleReturn(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === returnForm.yarnItemId);
+    const n = Number(returnForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!returnForm.block) {
+      setError(t('কোন ব্লক থেকে ফেরত দেওয়া হচ্ছে তা নির্বাচন করুন।', 'Select which block this is being returned from.'));
+      return;
+    }
+    if (!returnForm.reason) {
+      setError(t('ফেরত দেওয়ার কারণ লিখুন।', 'Enter the reason for the return.'));
+      return;
+    }
+    const blockBal = blockBalancesFor(item.id).find((b) => b.block === returnForm.block)?.qty || 0;
+    if (n > blockBal + 0.001) {
+      setError(
+        t(
+          `ব্লক ${returnForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি ফেরত দেওয়া যাবে না।`,
+          `Block ${returnForm.block} currently has ${blockBal.toFixed(2)} lb — cannot return more than that.`
+        )
+      );
+      return;
+    }
+    await addLedgerEntry('returnToSupplier', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      block: returnForm.block,
+      date: returnForm.date,
+      notes: returnForm.reason,
+    });
+    setReturnForm({ yarnItemId: '', block: '', qty: '', date: today(), reason: '' });
+  }
+
+  async function handleDeleteEntry(entry) {
+    const ok = window.confirm(
+      t(
+        '⚠️ সতর্কতা: এই এন্ট্রি মুছে ফেললে এই ইয়ার্নের সব ব্যালেন্স (স্টোর, ব্লক, ওয়াইন্ডিং, নিটিং-প্রস্তুত) এবং Inventory-তে দেখানো সামগ্রিক স্টক — সবকিছু স্বয়ংক্রিয়ভাবে পুনরায় হিসাব হবে, কারণ সবই এই একই লেজার থেকে সরাসরি হিসাব হয়। অন্য কোনো এন্ট্রি এটার উপর ভিত্তি করে দেওয়া হয়ে থাকলে ব্যালেন্স ঋণাত্মক দেখাতে পারে। তারপরও মুছে ফেলতে চান?',
+        "⚠️ Warning: deleting this entry recalculates EVERYTHING for this yarn automatically — store, block, winding, ready-for-knitting balances, and the overall stock shown in Inventory — since all of it is computed directly from this same ledger. If a later entry depended on this one, a balance may now show negative. Still delete?"
+      )
+    );
+    if (!ok) return;
+    await deleteDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id));
+  }
+
+  const ledgerExportColumns = [
+    { key: 'date', label: t('তারিখ', 'Date') },
+    { key: 'type', label: t('ধরন', 'Type'), render: (r) => t(LEDGER_LABELS[r.type]?.bn, LEDGER_LABELS[r.type]?.en) },
+    { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
+    { key: 'qty', label: t('কোয়ান্টিটি (lb)', 'Quantity (lb)') },
+    { key: 'fromSection', label: t('কোথা থেকে', 'From Section') },
+    { key: 'toSection', label: t('কোথায়', 'To Section') },
+    { key: 'block', label: t('ব্লক', 'Block') },
+    { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
+    { key: 'chalanNo', label: t('চালান নং', 'Chalan No.') },
+    {
+      key: 'inspectionStatus',
+      label: t('ইন্সপেকশন', 'Inspection'),
+      render: (r) => (r.type === 'receipt' ? t(INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.bn, INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.en) : ''),
+    },
+    { key: 'notes', label: t('নোট/কারণ', 'Note/Reason') },
+    { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
+  ];
+
+  const balanceExportColumns = [
+    { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
+    { key: 'ordered', label: t('ডাইং অর্ডার (lb)', 'Dyeing Order (lb)') },
+    { key: 'received', label: t('রিসিভড (lb)', 'Received (lb)') },
+    { key: 'balanceToReceive', label: t('বাকি রিসিভ করতে হবে (lb)', 'Balance to Receive (lb)') },
+    { key: 'atStore', label: t('স্টোরে আছে/ইস্যুযোগ্য (lb)', 'At Store/Issuable (lb)') },
+    { key: 'pendingInspection', label: t('ইন্সপেকশনের অপেক্ষায় (lb)', 'Awaiting Inspection (lb)') },
+    { key: 'atWinding', label: t('ওয়াইন্ডিং-এ আছে (lb)', 'At Winding (lb)') },
+    { key: 'readyForKnitting', label: t('নিটিং-এর জন্য প্রস্তুত (lb)', 'Ready for Knitting (lb)') },
+    { key: 'returned', label: t('সাপ্লায়ারকে ফেরত (lb)', 'Returned to Supplier (lb)') },
+  ];
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="font-display text-2xl font-semibold text-ink">{t('স্টাইল-ভিত্তিক ইয়ার্ন ট্র্যাকিং', 'Style-wise Yarn Tracking')}</h1>
+        <p className="mt-1 text-sm text-ink-soft">
+          {t(
+            'একটি স্টাইল সার্চ করুন। ডাইং অর্ডার তৈরি হয় Inventory > নতুন আইটেম থেকে — এখান থেকে সাপ্লায়ার থেকে রিসিভ (চালান + ব্লক একসাথে) এবং ইয়ার্ন স্টোর থেকে ওয়াইন্ডিং/নিটিং-এ ইস্যু ট্র্যাক করুন। সব হিসাব পাউন্ড (lb)-এ।',
+            "Search a style. Dyeing orders are created from Inventory > New Item — from here, track receiving from supplier (chalan + block together) and the Yarn Store issuing to Winding/Knitting. Everything in pounds (lb)."
+          )}
+        </p>
+      </div>
+
+      {canApprove && pendingApprovals && pendingApprovals.length > 0 && (
+        <div className="rounded-lg border border-amber bg-amber-soft/40 p-5">
+          <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-semibold text-ink">
+            <ShieldAlert size={16} className="text-amber" />
+            {t('অনুমোদনের অপেক্ষায় থাকা ইয়ার্ন ইস্যু রিকোয়েস্ট', 'Yarn Issue Requests Awaiting Approval')}
+            <span className="rounded-full bg-amber px-2 py-0.5 text-xs text-white">{pendingApprovals.length}</span>
+          </h2>
+          <div className="space-y-2">
+            {pendingApprovals.map((req) => (
+              <div key={req.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
+                <div>
+                  <p className="font-medium text-ink">
+                    {req.styleNo} · {req.yarnItemName} — {req.requestedQty} lb {t('চাওয়া হয়েছে', 'requested')}
+                  </p>
+                  <p className="text-xs text-ink-soft">
+                    {t('স্ট্যান্ডার্ড', 'Standard')}: {req.standardQty} lb · {t('বাফারসহ সর্বোচ্চ', 'Max w/ buffer')}: {req.bufferQty} lb ·{' '}
+                    {t('ব্লক', 'Block')}: {req.block} · {req.requestedBy} · {req.date}
+                  </p>
+                  {req.notes && <p className="text-xs text-ink-soft">{t('নোট', 'Note')}: {req.notes}</p>}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleApproveIssue(req)}
+                    disabled={approverBusyId === req.id}
+                    className="inline-flex items-center gap-1 rounded-md bg-green px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Check size={13} /> {t('অনুমোদন', 'Approve')}
+                  </button>
+                  <button
+                    onClick={() => handleRejectIssue(req)}
+                    disabled={approverBusyId === req.id}
+                    className="inline-flex items-center gap-1 rounded-md border border-red/30 bg-red-soft px-3 py-1.5 text-xs font-medium text-red hover:bg-red/10 disabled:opacity-50"
+                  >
+                    <X size={13} /> {t('বাতিল', 'Reject')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-md">
+        <StyleSearchSelect value={styleId} onChange={(id) => setStyleId(id)} />
+      </div>
+
+      {style && (
+        <>
+          <div className="rounded-lg border border-line bg-surface p-4">
+            <p className="font-medium text-ink">{style.styleNo} {style.styleName && `— ${style.styleName}`}</p>
+            <p className="text-xs text-ink-soft">{style.buyer} {style.poNo && `· PO: ${style.poNo}`}</p>
+          </div>
+
+          {canManage && (
+            <div className="rounded-lg border border-line bg-surface p-5">
+              <h2 className="mb-1 font-display text-sm font-semibold text-ink">
+                {t('এই স্টাইলের ইয়ার্ন', "This Style's Yarns")}
+              </h2>
+              <p className="mb-3 text-xs text-ink-soft">
+                {t(
+                  'নিচে যে ইয়ার্নগুলো যোগ করবেন, শুধু সেগুলোই এই স্টাইলের রিসিভ/ইস্যু/ট্রান্সফার/রিটার্ন ফর্মে দেখাবে — পুরো ইয়ার্ন ক্যাটালগ থেকে ভুল ইয়ার্ন বেছে নেওয়ার ঝুঁকি থাকবে না।',
+                  "Only the yarns you add here will show up in this style's Receive/Issue/Transfer/Return dropdowns — no risk of picking the wrong yarn from the full factory catalog."
+                )}
+              </p>
+
+              {linkedYarnIds.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {styleYarnItems.map((y) => (
+                    <span key={y.id} className="inline-flex items-center gap-1.5 rounded-full border border-indigo/30 bg-indigo-soft px-3 py-1 text-xs font-medium text-indigo">
+                      {y.name}
+                      <button type="button" onClick={() => unlinkYarnFromStyle(y.id)} className="text-indigo hover:text-red" title={t('সরিয়ে দিন', 'Remove')}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="relative max-w-sm">
+                <input
+                  className={`${inputClass} text-base sm:text-sm`}
+                  placeholder={t('ইয়ার্নের নাম লিখুন…', 'Type a yarn name…')}
+                  value={yarnPickerQuery}
+                  onChange={(e) => setYarnPickerQuery(e.target.value)}
+                />
+                {yarnPickerQuery.trim() && (
+                  <div className="absolute z-10 mt-1 w-full space-y-1 rounded-md border border-line bg-surface p-1.5 shadow-md">
+                    {yarnPickerMatches.map((y) => (
+                      <button
+                        type="button"
+                        key={y.id}
+                        onClick={() => linkYarnToStyle(y.id)}
+                        className="block w-full rounded px-2 py-1.5 text-left text-sm text-ink hover:bg-paper"
+                      >
+                        {y.name} <span className="text-xs text-ink-soft">({t('বিদ্যমান ইয়ার্ন', 'existing yarn')})</span>
+                      </button>
+                    ))}
+                    {!yarnPickerExactMatch && (
+                      <button
+                        type="button"
+                        onClick={() => createAndLinkYarn(yarnPickerQuery)}
+                        className="block w-full rounded px-2 py-1.5 text-left text-sm font-medium text-indigo hover:bg-indigo-soft"
+                      >
+                        + {t(`নতুন ইয়ার্ন তৈরি করুন: "${yarnPickerQuery}"`, `Create new yarn: "${yarnPickerQuery}"`)}
+                      </button>
+                    )}
+                    {yarnPickerMatches.length === 0 && yarnPickerExactMatch && (
+                      <p className="px-2 py-1.5 text-xs text-ink-soft">{t('এই ইয়ার্ন ইতিমধ্যে যোগ করা আছে।', 'This yarn is already added.')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+              {linkedYarnIds.length === 0 && (
+                <p className="mt-2 text-xs text-amber">
+                  {t(
+                    'এখনো কোনো ইয়ার্ন যোগ করা হয়নি — যতক্ষণ না যোগ করছেন, ততক্ষণ নিচের ফর্মে পুরো ক্যাটালগ দেখাবে (আগের মতো)।',
+                    "No yarn linked yet — until you add one, the forms below show the full catalog (as before)."
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red">{error}</p>}
+
+          {canManage && (
+            <div className="grid gap-4 lg:grid-cols-3">
+              <form onSubmit={handleReceive} className="space-y-3 rounded-lg border border-line bg-surface p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <Truck size={15} /> {t('সাপ্লায়ার থেকে রিসিভ', 'Receive from Supplier')}
+                </h2>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={receiveForm.yarnItemId} onChange={(e) => setReceiveForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {styleYarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('রিসিভড কোয়ান্টিটি (lb) *', 'Received Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={receiveForm.qty} onChange={(e) => setReceiveForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('কোন ব্লকে রাখা হবে *', 'Store in Block *')}>
+                    <select value={receiveForm.block} onChange={(e) => setReceiveForm((f) => ({ ...f, block: e.target.value }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {BLOCKS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <Field label={t('চালান নং', 'Chalan No.')}>
+                  <input value={receiveForm.chalanNo} onChange={(e) => setReceiveForm((f) => ({ ...f, chalanNo: e.target.value }))} className={inputClass} />
+                </Field>
+                <Field label={t('তারিখ', 'Date')}>
+                  <input type="date" value={receiveForm.date} onChange={(e) => setReceiveForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                </Field>
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('রিসিভ সেভ করুন', 'Save Receipt')}</button>
+              </form>
+
+              <form onSubmit={handleIssue} className="space-y-3 rounded-lg border border-line bg-surface p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <Send size={15} /> {t('ইয়ার্ন স্টোর থেকে ইস্যু', 'Issue from Yarn Store')}
+                </h2>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={issueForm.yarnItemId} onChange={(e) => setIssueForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {styleYarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label={t('কোথায় ইস্যু হবে', 'Issue To')}>
+                  <select value={issueForm.destination} onChange={(e) => setIssueForm((f) => ({ ...f, destination: e.target.value }))} className={inputClass}>
+                    <option value="winding">{t('ওয়াইন্ডিং সেকশন', 'Winding Section')}</option>
+                    <option value="knitting">{t('সরাসরি নিটিং সেকশন', 'Direct to Knitting Section')}</option>
+                  </select>
+                </Field>
+                <Field label={t('কোন ব্লক থেকে *', 'From Which Block *')}>
+                  <select value={issueForm.block} onChange={(e) => setIssueForm((f) => ({ ...f, block: e.target.value }))} className={inputClass} disabled={!issueForm.yarnItemId}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {issueForm.yarnItemId &&
+                      blockBalancesFor(issueForm.yarnItemId).map((b) => (
+                        <option key={b.block} value={b.block}>
+                          {t(`ব্লক ${b.block}`, `Block ${b.block}`)} — {b.qty.toFixed(2)} lb
+                        </option>
+                      ))}
+                  </select>
+                  {issueForm.yarnItemId && blockBalancesFor(issueForm.yarnItemId).length === 0 && pendingInspectionFor(issueForm.yarnItemId).length === 0 && (
+                    <p className="mt-1 text-xs text-red">
+                      {t('এই ইয়ার্নের কোনো ব্লকে এখনো স্টক নেই — আগে রিসিভ করুন।', 'No block has any stock for this yarn yet — receive it first.')}
+                    </p>
+                  )}
+                  {issueForm.yarnItemId && pendingInspectionFor(issueForm.yarnItemId).length > 0 && (
+                    <p className="mt-1 text-xs text-amber">
+                      {t(
+                        `${pendingInspectionFor(issueForm.yarnItemId).reduce((s, e) => s + Number(e.qty || 0), 0).toFixed(2)} lb এখনো QC ইন্সপেকশনের অপেক্ষায় — পাস না হওয়া পর্যন্ত ইস্যু করা যাবে না।`,
+                        `${pendingInspectionFor(issueForm.yarnItemId).reduce((s, e) => s + Number(e.qty || 0), 0).toFixed(2)} lb is still awaiting QC inspection — not issuable until passed.`
+                      )}
+                    </p>
+                  )}
+                </Field>
+                {issueForm.destination === 'knitting' && style && (
+                  <div className="rounded-md border border-indigo/30 bg-indigo-soft/40 p-3">
+                    <Field label={t('কন্টাক্ট ওয়েট (lb/ডজন)', 'Contact Weight (lb/dozen)')}>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.001"
+                        value={issueForm.contactWeight}
+                        onChange={(e) => setIssueForm((f) => ({ ...f, contactWeight: e.target.value }))}
+                        className={inputClass}
+                        placeholder={t('যেমন: ০.৩৫', 'e.g. 0.35')}
+                      />
+                    </Field>
+                    {issueForm.contactWeight ? (
+                      <div className="mt-2 space-y-1 text-xs text-ink-soft">
+                        <p>
+                          {t('অর্ডার কোয়ান্টিটি', 'Order Qty')}: {Number(style.orderQty || 0).toLocaleString('en-US')} ÷ 12 × {issueForm.contactWeight} ={' '}
+                          <span className="font-semibold text-ink">{contactWeightBaseQty.toFixed(2)} lb</span> ({t('স্ট্যান্ডার্ড', 'standard')})
+                        </p>
+                        <p>
+                          +10% {t('বাফারসহ সর্বোচ্চ', 'buffer, max allowed')}: <span className="font-semibold text-ink">{contactWeightBufferQty.toFixed(2)} lb</span>
+                        </p>
+                        {Number(issueForm.qty) > contactWeightBufferQty && (
+                          <p className="text-amber">
+                            {t(
+                              'এর বেশি ইস্যু করলে হায়ার অথরিটির (Admin/PD/MD/DGM) অনুমোদন লাগবে — সাবমিট করলে অনুমোদনের অনুরোধ পাঠানো হবে।',
+                              'Issuing more than this needs Higher Authority (Admin/PD/MD/DGM) approval — submitting will send an approval request instead of issuing directly.'
+                            )}
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setIssueForm((f) => ({ ...f, qty: contactWeightBufferQty.toFixed(2) }))}
+                          className="text-indigo underline hover:text-indigo-deep"
+                        >
+                          {t('সর্বোচ্চ অনুমোদিত পরিমাণ বসান', 'Fill max allowed amount')}
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t(
+                          'কন্টাক্ট ওয়েট দিলে অর্ডার কোয়ান্টিটি অনুযায়ী স্ট্যান্ডার্ড ইয়ার্ন প্রয়োজন অটো ক্যালকুলেট হবে (ঐচ্ছিক)।',
+                          'Enter contact weight to auto-calculate standard yarn requirement from order qty (optional).'
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <Field label={t('ইস্যু কোয়ান্টিটি (lb) *', 'Issue Quantity (lb) *')}>
+                  <input type="number" min="0" step="0.01" value={issueForm.qty} onChange={(e) => setIssueForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                </Field>
+                <Field label={t('তারিখ', 'Date')}>
+                  <input type="date" value={issueForm.date} onChange={(e) => setIssueForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                </Field>
+                {issueNotice && <p className="rounded-md border border-indigo/30 bg-indigo-soft p-2 text-xs text-indigo">{issueNotice}</p>}
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('ইস্যু সেভ করুন', 'Save Issue')}</button>
+              </form>
+
+              {hasAreaAdmin(profile, 'inventory') && (
+                <form onSubmit={handleAdjust} className="space-y-3 rounded-lg border border-amber bg-amber-soft/30 p-5">
+                  <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                    {t('ব্লক সংশোধন (রিকনসিলিয়েশন)', 'Block Adjustment (Reconciliation)')}
+                  </h2>
+                  <p className="text-xs text-ink-soft">
+                    {t(
+                      'ভুল এন্ট্রি বা পুরনো ডেটা ঠিক করতে সরাসরি কোনো ব্লকের স্টক যোগ/বিয়োগ করুন — এটা সাধারণ রিসিভ/ইস্যু না, শুধু হিসাব মিলাতে ব্যবহার করুন।',
+                      "Directly add/remove stock in a block to fix a mistake or reconcile old data — this isn't a normal receive/issue, use it only to correct the count."
+                    )}
+                  </p>
+                  <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                    <select value={adjustForm.yarnItemId} onChange={(e) => setAdjustForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {styleYarnItems.map((y) => (
+                        <option key={y.id} value={y.id}>{y.name}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={t('দিক', 'Direction')}>
+                    <select value={adjustForm.direction} onChange={(e) => setAdjustForm((f) => ({ ...f, direction: e.target.value }))} className={inputClass}>
+                      <option value="in">{t('যোগ করুন (+)', 'Add (+)')}</option>
+                      <option value="out">{t('বিয়োগ করুন (−)', 'Remove (−)')}</option>
+                    </select>
+                  </Field>
+                  <Field label={t('ব্লক *', 'Block *')}>
+                    <select value={adjustForm.block} onChange={(e) => setAdjustForm((f) => ({ ...f, block: e.target.value }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {BLOCKS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                    {adjustForm.direction === 'out' && adjustForm.yarnItemId && adjustForm.block && (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t('বর্তমানে এই ব্লকে', 'Currently in this block')}:{' '}
+                        {(blockBalancesFor(adjustForm.yarnItemId).find((b) => b.block === adjustForm.block)?.qty || 0).toFixed(2)} lb
+                      </p>
+                    )}
+                  </Field>
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={adjustForm.qty} onChange={(e) => setAdjustForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={adjustForm.date} onChange={(e) => setAdjustForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('কারণ *', 'Reason *')}>
+                    <input value={adjustForm.reason} onChange={(e) => setAdjustForm((f) => ({ ...f, reason: e.target.value }))} className={inputClass} placeholder={t('যেমন: ফিজিক্যাল কাউন্ট মেলাতে', 'e.g. to match physical count')} />
+                  </Field>
+                  <button type="submit" className={`${btnPrimary} w-full`}>{t('সংশোধন সেভ করুন', 'Save Adjustment')}</button>
+                </form>
+              )}
+            </div>
+          )}
+
+          {canManage && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <form onSubmit={handleTransfer} className="space-y-3 rounded-lg border border-line bg-surface p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <ArrowRightLeft size={15} /> {t('সেকশন থেকে সেকশনে ইয়ার্ন ট্রান্সফার', 'Section-to-Section Yarn Transfer')}
+                </h2>
+                <p className="text-xs text-ink-soft">
+                  {t(
+                    'নিটিং-এ দেওয়া ইয়ার্ন থেকে বেঁচে যাওয়া অংশ লিংকিং/ট্রিমিং/মেন্ডিং/সুইং বা অন্য যেকোনো সেকশনে ট্রান্সফার করুন — শুধু সেই সেকশনে যা স্টক আছে তার মধ্যেই।',
+                    'Transfer leftover yarn from Knitting (or any section) onward to Linking/Trimming/Mending/Sewing or any other section — limited to what that section currently has.'
+                  )}
+                </p>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={transferForm.yarnItemId} onChange={(e) => setTransferForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {styleYarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোন সেকশন থেকে *', 'From Section *')}>
+                    <select value={transferForm.fromSection} onChange={(e) => setTransferForm((f) => ({ ...f, fromSection: e.target.value }))} className={inputClass}>
+                      {STAGES.map((s) => (
+                        <option key={s.key} value={s.key}>{t(s.label, s.labelEn)}</option>
+                      ))}
+                    </select>
+                    {transferForm.yarnItemId && (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t('বর্তমান স্টক', 'Current stock')}: {(sectionBalancesFor(transferForm.yarnItemId).find((s) => s.section === transferForm.fromSection)?.qty || 0).toFixed(2)} lb
+                      </p>
+                    )}
+                  </Field>
+                  <Field label={t('কোন সেকশনে *', 'To Section *')}>
+                    <select value={transferForm.toSection} onChange={(e) => setTransferForm((f) => ({ ...f, toSection: e.target.value }))} className={inputClass}>
+                      {STAGES.map((s) => (
+                        <option key={s.key} value={s.key}>{t(s.label, s.labelEn)}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={transferForm.qty} onChange={(e) => setTransferForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={transferForm.date} onChange={(e) => setTransferForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                </div>
+                <Field label={t('নোট (ঐচ্ছিক)', 'Note (optional)')}>
+                  <input value={transferForm.notes} onChange={(e) => setTransferForm((f) => ({ ...f, notes: e.target.value }))} className={inputClass} />
+                </Field>
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('ট্রান্সফার সেভ করুন', 'Save Transfer')}</button>
+              </form>
+
+              <form onSubmit={handleReturn} className="space-y-3 rounded-lg border border-red/30 bg-red-soft/20 p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <Undo2 size={15} /> {t('সাপ্লায়ারকে ইয়ার্ন ফেরত', 'Return Yarn to Supplier')}
+                </h2>
+                <p className="text-xs text-ink-soft">
+                  {t(
+                    'ইয়ার্নে সমস্যা থাকলে বা অন্য কোনো কারণে স্টোর থেকে সাপ্লায়ারকে ফেরত দিলে এখানে এন্ট্রি দিন — সংশ্লিষ্ট ব্লকের স্টক থেকে বাদ যাবে।',
+                    'If yarn has a defect or must go back for any other reason, log it here — it will be deducted from that block\'s stock.'
+                  )}
+                </p>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={returnForm.yarnItemId} onChange={(e) => setReturnForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {styleYarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label={t('কোন ব্লক থেকে *', 'From Which Block *')}>
+                  <select value={returnForm.block} onChange={(e) => setReturnForm((f) => ({ ...f, block: e.target.value }))} className={inputClass} disabled={!returnForm.yarnItemId}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {returnForm.yarnItemId &&
+                      blockBalancesFor(returnForm.yarnItemId).map((b) => (
+                        <option key={b.block} value={b.block}>
+                          {t(`ব্লক ${b.block}`, `Block ${b.block}`)} — {b.qty.toFixed(2)} lb
+                        </option>
+                      ))}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={returnForm.qty} onChange={(e) => setReturnForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={returnForm.date} onChange={(e) => setReturnForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                </div>
+                <Field label={t('ফেরতের কারণ *', 'Reason for Return *')}>
+                  <input value={returnForm.reason} onChange={(e) => setReturnForm((f) => ({ ...f, reason: e.target.value }))} className={inputClass} placeholder={t('যেমন: ইয়ার্নে ত্রুটি', 'e.g. defective yarn')} />
+                </Field>
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('ফেরত সেভ করুন', 'Save Return')}</button>
+              </form>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-line bg-surface p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-semibold text-ink">{t('সেকশন-ওয়াইজ ইয়ার্ন ব্যালেন্স', 'Section-wise Yarn Balance')}</h2>
+              <ExportBar
+                small
+                title={t('সেকশন-ওয়াইজ ইয়ার্ন ব্যালেন্স', 'Section-wise Yarn Balance')}
+                subtitle={`${style.styleNo} · ${style.buyer}`}
+                filename={`section-yarn-balance-${style.styleNo}`}
+                columns={[
+                  { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
+                  { key: 'section', label: t('সেকশন', 'Section') },
+                  { key: 'qty', label: t('কোয়ান্টিটি (lb)', 'Quantity (lb)') },
+                ]}
+                rows={yarnItems.flatMap((y) => sectionBalancesFor(y.id).map((s) => ({ yarnItemName: y.name, section: t(s.label, s.labelEn), qty: s.qty })))}
+              />
+            </div>
+            {(() => {
+              const rows = yarnItems.flatMap((y) => sectionBalancesFor(y.id).map((s) => ({ yarnItemName: y.name, section: t(s.label, s.labelEn), qty: s.qty })));
+              return rows.length === 0 ? (
+                <EmptyState title={t('এখনো কোনো সেকশন ট্রান্সফার নেই', 'No section balances yet')} />
+              ) : (
+                <div className="scroll-thin overflow-x-auto">
+                  <table className="w-full min-w-[480px] text-sm">
+                    <thead>
+                      <tr className="border-b border-line text-left text-xs text-ink-soft">
+                        <th className="py-2 pr-4 font-medium">{t('ইয়ার্ন', 'Yarn')}</th>
+                        <th className="py-2 pr-4 font-medium">{t('সেকশন', 'Section')}</th>
+                        <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={i} className="border-b border-line last:border-0">
+                          <td className="py-2 pr-4 text-ink">{r.yarnItemName}</td>
+                          <td className="py-2 pr-4 text-ink-soft">{r.section}</td>
+                          <td className="py-2 pr-4 text-ink-soft">{r.qty.toFixed(2)} lb</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="rounded-lg border border-line bg-surface p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-semibold text-ink">{t('ইয়ার্ন-ভিত্তিক ব্যালেন্স', 'Yarn-wise Balance')}</h2>
+              <ExportBar
+                small
+                title={t('ইয়ার্ন-ভিত্তিক ব্যালেন্স', 'Yarn-wise Balance')}
+                subtitle={`${style.styleNo} · ${style.buyer}`}
+                filename={`yarn-balance-${style.styleNo}`}
+                columns={balanceExportColumns}
+                rows={balances}
+              />
+            </div>
+            {balances.length === 0 ? (
+              <EmptyState title={t('এখনো কোনো ডেটা নেই', 'No data yet')} />
+            ) : (
+              <div className="scroll-thin overflow-x-auto">
+                <table className="w-full min-w-[720px] text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs text-ink-soft">
+                      <th className="py-2 pr-4 font-medium">{t('ইয়ার্ন', 'Yarn')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('অর্ডার', 'Ordered')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('রিসিভড', 'Received')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('বাকি রিসিভ', 'To Receive')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('স্টোরে (ইস্যুযোগ্য)', 'At Store (issuable)')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইন্সপেকশন বাকি', 'Awaiting Inspection')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ওয়াইন্ডিং-এ', 'At Winding')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('নিটিং-প্রস্তুত', 'Knitting-Ready')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {balances.map((b) => (
+                      <tr key={b.yarnItemId} className="border-b border-line last:border-0">
+                        <td className="py-2 pr-4 text-ink">{b.yarnItemName}</td>
+                        <td className="py-2 pr-4 text-ink-soft">{b.ordered.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 text-ink-soft">{b.received.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 text-ink-soft">{b.balanceToReceive.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 text-ink-soft">{b.atStore.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 text-ink-soft">
+                          {b.pendingInspection > 0 ? (
+                            <span className="rounded-full bg-amber-soft px-2 py-0.5 text-amber">{b.pendingInspection.toFixed(2)} lb</span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-ink-soft">{b.atWinding.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 font-medium text-ink">{b.readyForKnitting.toFixed(2)} lb</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-line bg-surface p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-semibold text-ink">{t('লেজার ইতিহাস', 'Ledger History')}</h2>
+              <ExportBar
+                small
+                title={t('ইয়ার্ন লেজার', 'Yarn Ledger')}
+                subtitle={`${style.styleNo} · ${style.buyer}`}
+                filename={`yarn-ledger-${style.styleNo}`}
+                columns={ledgerExportColumns}
+                rows={ledger || []}
+              />
+            </div>
+            {ledger === null ? (
+              <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>
+            ) : ledger.length === 0 ? (
+              <EmptyState title={t('এখনো কোনো এন্ট্রি নেই', 'No entries yet')} />
+            ) : (
+              <div className="scroll-thin overflow-x-auto">
+                <table className="w-full min-w-[680px] text-sm">
+                  <thead>
+                    <tr className="border-b border-line text-left text-xs text-ink-soft">
+                      <th className="py-2 pr-4 font-medium">{t('তারিখ', 'Date')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ধরন', 'Type')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইয়ার্ন', 'Yarn')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইন্সপেকশন', 'Inspection')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('বিস্তারিত', 'Detail')}</th>
+                      <th className="py-2 pr-4 font-medium"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledger.map((e) => (
+                      <tr key={e.id} className="border-b border-line last:border-0">
+                        <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
+                        <td className="py-2 pr-4 text-ink">{t(LEDGER_LABELS[e.type]?.bn, LEDGER_LABELS[e.type]?.en)}</td>
+                        <td className="py-2 pr-4 text-ink-soft">{e.yarnItemName}</td>
+                        <td className="py-2 pr-4 text-ink-soft">{e.qty} lb</td>
+                        <td className="py-2 pr-4">
+                          {e.type === 'receipt' && <InspectionBadge status={e.inspectionStatus} t={t} />}
+                        </td>
+                        <td className="py-2 pr-4 text-ink-soft">
+                          {e.fromSection && e.toSection && `${t(STAGES.find((s) => s.key === e.fromSection)?.label, STAGES.find((s) => s.key === e.fromSection)?.labelEn)} → ${t(STAGES.find((s) => s.key === e.toSection)?.label, STAGES.find((s) => s.key === e.toSection)?.labelEn)} `}
+                          {e.block && `${t('ব্লক', 'Block')}: ${e.block} `}
+                          {e.supplier && `${t('সাপ্লায়ার', 'Supplier')}: ${e.supplier} `}
+                          {e.chalanNo && `${t('চালান', 'Chalan')}: ${e.chalanNo}`}
+                          {e.contactWeight && `${t('কন্টাক্ট ওয়েট', 'Contact Wt')}: ${e.contactWeight} lb/dz `}
+                          {e.approvedOverage && (
+                            <span className="ml-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[10px] font-medium text-amber">
+                              {t('হায়ার অথরিটি অনুমোদিত', 'Higher-authority approved')}
+                            </span>
+                          )}
+                          {e.notes}
+                        </td>
+                        <td className="py-2 pr-4">
+                          <div className="flex items-center gap-2">
+                            {hasAreaAdmin(profile, 'inventory') && (
+                              <>
+                                <button onClick={() => setEditingEntry(e)} className="text-indigo hover:opacity-70">
+                                  <Pencil size={14} />
+                                </button>
+                                <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {editingEntry && (
+        <EditLedgerEntryModal
+          entry={editingEntry}
+          styleId={styleId}
+          onClose={() => setEditingEntry(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Admin/inventory-area-admin can correct a mistaken entry directly (wrong
+// quantity, date, chalan number, block, or notes) instead of having to
+// delete and re-create it. The entry's `type` never changes here — editing
+// what an entry MEANS (receipt vs issue, etc.) would need a delete + new
+// entry, since every balance formula depends on type staying fixed.
+function EditLedgerEntryModal({ entry, styleId, onClose }) {
+  const { t } = useLang();
+  const [qty, setQty] = useState(String(entry.qty));
+  const [date, setDate] = useState(entry.date);
+  const [block, setBlock] = useState(entry.block || '');
+  const [chalanNo, setChalanNo] = useState(entry.chalanNo || '');
+  const [notes, setNotes] = useState(entry.notes || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const showBlock = ['receipt', 'issueToWinding', 'issueToKnitting', 'blockAdjustIn', 'blockAdjustOut', 'returnToSupplier'].includes(entry.type);
+  const showChalan = entry.type === 'receipt';
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError('');
+    const n = Number(qty);
+    if (!n || n <= 0) {
+      setError(t('সঠিক কোয়ান্টিটি দিন।', 'Enter a valid quantity.'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id), {
+        qty: n,
+        date,
+        ...(showBlock ? { block } : {}),
+        ...(showChalan ? { chalanNo } : {}),
+        notes,
+      });
+      onClose();
+    } catch (err) {
+      setError(t('সেভ করা যায়নি।', 'Could not save.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={t('এন্ট্রি এডিট করুন', 'Edit Entry')} onClose={onClose}>
+      <form onSubmit={handleSave} className="space-y-4">
+        <p className="text-xs text-ink-soft">
+          {t(LEDGER_LABELS[entry.type]?.bn, LEDGER_LABELS[entry.type]?.en)} — {entry.yarnItemName}
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+            <input type="number" min="0" step="0.01" className={inputClass} value={qty} onChange={(e) => setQty(e.target.value)} />
+          </Field>
+          <Field label={t('তারিখ', 'Date')}>
+            <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+          {showBlock && (
+            <Field label={t('ব্লক', 'Block')}>
+              <select className={inputClass} value={block} onChange={(e) => setBlock(e.target.value)}>
+                <option value="">{t('কোনোটি না', 'None')}</option>
+                {BLOCKS.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {showChalan && (
+            <Field label={t('চালান নং', 'Chalan No.')}>
+              <input className={inputClass} value={chalanNo} onChange={(e) => setChalanNo(e.target.value)} />
+            </Field>
+          )}
+        </div>
+        <Field label={t('নোট', 'Notes')}>
+          <input className={inputClass} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red">{error}</p>}
+        <div className="flex gap-3">
+          <button type="submit" disabled={busy} className={btnPrimary}>
+            {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
+          </button>
+          <button type="button" className={btnSecondary} onClick={onClose}>
+            {t('বাতিল', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

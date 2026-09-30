@@ -1,0 +1,1121 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import {
+  doc,
+  onSnapshot,
+  collection,
+  query,
+  orderBy,
+  limit,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  getDocs,
+  writeBatch,
+  increment,
+  serverTimestamp,
+} from 'firebase/firestore';
+import { ArrowLeft, Pencil, Trash2, ImagePlus, X } from 'lucide-react';
+import { db } from '../../firebase';
+import { useAuth } from '../../context/AuthContext';
+import { Field, inputClass, btnPrimary, btnSecondary, btnDanger, EmptyState, Modal } from '../../components/ui';
+import ExportBar from '../../components/ExportBar';
+import { STAGES, can, canEnterSection, stageLabel } from '../../lib/constants';
+import { useLang } from '../../lib/i18n';
+import {
+  getLocalStyles,
+  getLocalItems,
+  getLocalProductionEntries,
+  getLocalYarnLedger,
+} from '../../lib/demoData';
+import { fileToCompressedDataUrl } from '../../lib/imageUtils';
+import PoColourEditor, { emptyPo, posSummary, poSubtotal } from '../../components/PoColourEditor';
+
+// A stage's real prerequisite: the style-specific override if one was set
+// (Edit Style > Customize Stage Order), otherwise just "the stage right
+// before it" in the normal STAGES sequence. index must be > 0.
+function effectivePrereqKey(style, stageKey, index) {
+  return style?.stagePrerequisites?.[stageKey] || STAGES[index - 1].key;
+}
+
+// Every other stage (besides stageKey itself) whose effective prerequisite
+// is also prereqKey — i.e. every stage configured to draw from the same
+// upstream pool as this one (e.g. Trimming, Mending and Wash can all be
+// set to follow directly from Linking).
+function siblingStagesSharingPrereq(style, prereqKey, stageKey) {
+  return STAGES.filter((s, i) => i > 0 && s.key !== stageKey && effectivePrereqKey(style, s.key, i) === prereqKey).map((s) => s.key);
+}
+
+// How many pieces are still free to log at `stage` right now: the
+// prerequisite stage's total output, minus whatever every stage sharing
+// that same prerequisite (this one included) has already claimed of it.
+// With only one stage on a given prerequisite this is identical to the
+// simple "previous stage total minus my total" check; with several stages
+// sharing one prerequisite, it correctly treats them as splitting one pool
+// instead of each getting the full amount independently.
+function sharedPoolAvailable(style, stage, stageIndex) {
+  const prereqKey = effectivePrereqKey(style, stage, stageIndex);
+  const siblings = siblingStagesSharingPrereq(style, prereqKey, stage);
+  const claimedBySiblings = siblings.reduce((sum, k) => sum + (style.stages?.[k] || 0), 0);
+  const ownDone = style.stages?.[stage] || 0;
+  const prereqTotal = style.stages?.[prereqKey] || 0;
+  return prereqTotal - claimedBySiblings - ownDone;
+}
+
+export default function StyleDetail() {
+  const { id } = useParams();
+  const { user, profile } = useAuth();
+  const { t, lang } = useLang();
+  const navigate = useNavigate();
+  const [style, setStyle] = useState(() => getLocalStyles().find((s) => s.id === id) || undefined);
+  const [entries, setEntries] = useState(() => getLocalProductionEntries().filter((e) => e.styleId === id));
+  const [entriesStageFilter, setEntriesStageFilter] = useState('all');
+  const [yarnItems, setYarnItems] = useState(() => getLocalItems().filter((i) => i.type === 'yarn'));
+  const [yarnLedger, setYarnLedger] = useState(() => getLocalYarnLedger().filter((e) => e.styleId === id));
+
+  const allowedStages = useMemo(() => STAGES.filter((s) => canEnterSection(profile, s.key)), [profile]);
+
+  // Per-yarn-item "ready for knitting" balance for THIS style, derived from
+  // the same style-scoped yarn ledger that Inventory > Style Yarn Tracking
+  // uses. Knitting production is gated on this: no yarn received/issued to
+  // this style yet => knitting entry is blocked, matching the factory rule
+  // that knitting cannot start before the yarn store has released yarn.
+  const yarnReadyBalances = useMemo(() => {
+    const map = new Map();
+    yarnLedger.forEach((e) => {
+      if (!map.has(e.yarnItemId)) {
+        map.set(e.yarnItemId, { yarnItemId: e.yarnItemId, yarnItemName: e.yarnItemName, issuedKnitting: 0, windingToKnitting: 0, consumed: 0 });
+      }
+      const b = map.get(e.yarnItemId);
+      const q = Number(e.qty || 0);
+      if (e.type === 'issueToKnitting') b.issuedKnitting += q;
+      if (e.type === 'windingToKnitting') b.windingToKnitting += q;
+      if (e.type === 'consumption') b.consumed += q;
+    });
+    return Array.from(map.values())
+      .map((b) => ({ ...b, ready: b.issuedKnitting + b.windingToKnitting - b.consumed }))
+      .filter((b) => b.ready > 0.001);
+  }, [yarnLedger]);
+  const totalYarnReady = yarnReadyBalances.reduce((s, b) => s + b.ready, 0);
+  const [stage, setStage] = useState('');
+  const [entryDate, setEntryDate] = useState(new Date().toISOString().slice(0, 10));
+  const [qty, setQty] = useState('');
+  const [note, setNote] = useState('');
+  // Knitting entries can consume more than one yarn at once (e.g. body yarn
+  // + a contrast/trim yarn together) — each row is independently validated
+  // against that yarn's own "ready for knitting" balance for this style.
+  const [yarnRows, setYarnRows] = useState([{ yarnItemId: '', yarnQty: '' }]);
+  const [entryPoNo, setEntryPoNo] = useState('');
+  const [entryColour, setEntryColour] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [editingStyle, setEditingStyle] = useState(false);
+
+  function updateYarnRow(idx, patch) {
+    setYarnRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function addYarnRow() {
+    setYarnRows((rows) => [...rows, { yarnItemId: '', yarnQty: '' }]);
+  }
+  function removeYarnRow(idx) {
+    setYarnRows((rows) => rows.filter((_, i) => i !== idx));
+  }
+
+  useEffect(() => {
+    if (allowedStages.length && !stage) setStage(allowedStages[0].key);
+  }, [allowedStages, stage]);
+
+  useEffect(() => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(
+        doc(db, 'styles', id),
+        (snap) => {
+          if (snap.exists()) setStyle({ id: snap.id, ...snap.data() });
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, [id]);
+
+  useEffect(() => {
+    let unsub = () => {};
+    try {
+      const q = query(collection(db, 'styles', id, 'productionEntries'), orderBy('date', 'desc'), limit(200));
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          if (!snap.empty) setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, [id]);
+
+  useEffect(() => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(
+        collection(db, 'inventoryItems'),
+        (snap) => {
+          if (!snap.empty) setYarnItems(snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((i) => i.type === 'yarn'));
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(
+        collection(db, 'styles', id, 'yarnLedger'),
+        (snap) => {
+          if (!snap.empty) setYarnLedger(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        },
+        () => {}
+      );
+    } catch {}
+    return () => unsub();
+  }, [id]);
+
+  async function handleAddEntry(e) {
+    e.preventDefault();
+    setError('');
+    const n = Number(qty);
+    if (!n || n <= 0) {
+      setError(t('সঠিক কোয়ান্টিটি দিন।', 'Enter a valid quantity.'));
+      return;
+    }
+    if (!canEnterSection(profile, stage)) {
+      setError(t('এই সেকশনে এন্ট্রি দেওয়ার অনুমতি নেই।', 'You are not permitted to enter data for this section.'));
+      return;
+    }
+
+    const stageIndex = STAGES.findIndex((s) => s.key === stage);
+    let validYarnRows = [];
+
+    if (stage === STAGES[0].key) {
+      // Knitting is gated on yarn: the store must have issued/wound yarn
+      // for this style before any knitting entry can be logged.
+      if (totalYarnReady <= 0) {
+        setError(
+          t(
+            'এই স্টাইলের জন্য এখনো কোনো ইয়ার্ন ইস্যু হয়নি — নিটিং প্রোডাকশন শুরু করার আগে ইয়ার্ন স্টোর থেকে ইয়ার্ন ইস্যু করতে হবে (Inventory > স্টাইল-ভিত্তিক ইয়ার্ন ট্র্যাকিং)।',
+            'No yarn has been issued for this style yet — the Yarn Store must issue yarn (Inventory > Style-wise Yarn Tracking) before knitting production can start.'
+          )
+        );
+        return;
+      }
+      validYarnRows = yarnRows.filter((r) => r.yarnItemId && Number(r.yarnQty) > 0);
+      if (validYarnRows.length === 0) {
+        setError(t('কোন ইয়ার্নের বিপরীতে উৎপাদন হচ্ছে তা নির্বাচন করে খরচ (lb) দিন।', 'Select at least one yarn used and enter its quantity (lb).'));
+        return;
+      }
+      // Two rows using the same yarn must be checked together against that
+      // yarn's balance, not one at a time.
+      const usedByYarn = new Map();
+      validYarnRows.forEach((r) => usedByYarn.set(r.yarnItemId, (usedByYarn.get(r.yarnItemId) || 0) + Number(r.yarnQty)));
+      for (const [yid, usedNow] of usedByYarn.entries()) {
+        const bal = yarnReadyBalances.find((b) => b.yarnItemId === yid);
+        const ready = bal?.ready || 0;
+        if (usedNow > ready + 0.001) {
+          setError(
+            t(
+              `"${bal?.yarnItemName || ''}" ইয়ার্নের জন্য শুধু ${ready.toFixed(2)} lb প্রস্তুত আছে, এর বেশি খরচ দেখানো যাবে না।`,
+              `Only ${ready.toFixed(2)} lb of "${bal?.yarnItemName || ''}" is ready — cannot log more than that as used.`
+            )
+          );
+          return;
+        }
+      }
+    } else if (stageIndex > 0) {
+      // Every later stage is capped by how much WIP its prerequisite stage
+      // has actually produced — a stage can't "invent" pieces that were
+      // never sent forward from its prerequisite. By default the
+      // prerequisite is just "the stage before it" in STAGES, but a style
+      // can override this per stage (Edit Style > Customize Stage Order),
+      // e.g. so Trimming, Mending AND Wash can all be set to draw
+      // straight from Linking — a piece can go whichever way it actually
+      // went on the floor, operator's choice at entry time.
+      //
+      // When more than one stage shares the same prerequisite like that,
+      // they're drawing from the SAME pool of WIP, not separate ones — so
+      // the cap must be shared: total logged across Trimming + Mending +
+      // Wash together can never exceed what Linking actually produced,
+      // otherwise the same pieces could be double-counted as available to
+      // more than one of them at once.
+      const available = sharedPoolAvailable(style, stage, stageIndex);
+      if (n > available + 0.0001) {
+        const prevKey = style.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
+        const siblings = siblingStagesSharingPrereq(style, prevKey, stage);
+        setError(
+          siblings.length > 0
+            ? t(
+                `${stageLabel(prevKey, 'bn')} থেকে মোট মাত্র ${available} পিস এখনো বাকি আছে (${siblings.map((k) => stageLabel(k, 'bn')).join(', ')}-এর সাথে ভাগ করা পুল), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
+                `Only ${available} pcs is still available from ${stageLabel(prevKey, 'en')} (shared pool with ${siblings.map((k) => stageLabel(k, 'en')).join(', ')}) — cannot log more than that here.`
+              )
+            : t(
+                `${stageLabel(prevKey, 'bn')} থেকে এখনো এই স্টেজে মাত্র ${available} পিস এসেছে (বাকি), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
+                `Only ${available} pcs is currently available from ${stageLabel(prevKey, 'en')} — cannot log more than that here.`
+              )
+        );
+        return;
+      }
+    }
+
+    setBusy(true);
+    try {
+      const entryData = {
+        stage,
+        quantity: n,
+        note: note || '',
+        date: entryDate,
+        enteredBy: profile?.name || user?.email,
+        createdAt: serverTimestamp(),
+      };
+      if (entryPoNo) entryData.poNo = entryPoNo;
+      if (entryColour) entryData.colour = entryColour;
+      if (stage === 'knitting' && validYarnRows.length > 0) {
+        const usages = validYarnRows.map((r) => ({
+          yarnItemId: r.yarnItemId,
+          yarnItemName: yarnItems.find((y) => y.id === r.yarnItemId)?.name || '',
+          yarnQty: Number(r.yarnQty),
+        }));
+        entryData.yarnUsages = usages;
+        // Kept for backward compatibility with older screens/reports that
+        // only ever knew a single yarn per entry — always mirrors the
+        // first row.
+        entryData.yarnItemId = usages[0].yarnItemId;
+        entryData.yarnItemName = usages[0].yarnItemName;
+        entryData.yarnQty = usages[0].yarnQty;
+      }
+      const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
+      const styleUpdate = { [`stages.${stage}`]: increment(n) };
+      // The very first production entry against a style is what "starts"
+      // it — before that it's only an Active Order on the dashboard, not
+      // yet a Running Style. Styles created before this feature existed
+      // have no `productionStarted` field at all, so they are treated as
+      // already running (see Dashboard) and are left untouched here.
+      if (style?.productionStarted === false) styleUpdate.productionStarted = true;
+      await updateDoc(doc(db, 'styles', id), styleUpdate);
+      if (entryData.yarnUsages?.length > 0) {
+        const ledgerIds = [];
+        for (const usage of entryData.yarnUsages) {
+          await updateDoc(doc(db, 'inventoryItems', usage.yarnItemId), {
+            currentStock: increment(-usage.yarnQty),
+          });
+          // Also record it on this style's yarn ledger, so the "ready for
+          // knitting" balance on the Style Yarn Tracking page stays
+          // accurate. Keep back-references on the production entry so
+          // deleting it can clean up every matching ledger row too.
+          const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+            type: 'consumption',
+            yarnItemId: usage.yarnItemId,
+            yarnItemName: usage.yarnItemName,
+            styleNo: style?.styleNo || '',
+            styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+            qty: usage.yarnQty,
+            date: entryDate,
+            notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
+            enteredBy: profile?.name || user?.email,
+            createdAt: serverTimestamp(),
+          });
+          ledgerIds.push(ledgerRef.id);
+        }
+        await updateDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] });
+      }
+      setQty('');
+      setNote('');
+      setYarnRows([{ yarnItemId: '', yarnQty: '' }]);
+      setEntryPoNo('');
+      setEntryColour('');
+    } catch (err) {
+      setError(t('এন্ট্রি যোগ করা যায়নি।', 'Could not add entry.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteEntry(entry) {
+    const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
+    if (!ok) return;
+    await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
+    const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
+    for (const lid of ledgerIds) {
+      // Deleting the matching yarn-consumption ledger entry is enough —
+      // every yarn balance (store/block/winding/ready-for-knitting) is
+      // computed live from this ledger, so nothing else needs touching.
+      await deleteDoc(doc(db, 'styles', id, 'yarnLedger', lid));
+    }
+    await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
+  }
+
+  // Firestore never auto-deletes a document's subcollections, so deleting
+  // just the style doc would leave its productionEntries/yarnLedger/
+  // accessoryLedger documents orphaned — and since Reports, the
+  // Dashboard, Yarn Blocks and Item Detail all read those via
+  // collectionGroup() queries across every style, an orphaned style's
+  // data would keep showing up everywhere forever. This fetches and
+  // deletes every subcollection document first, then the style itself.
+  async function handleDeleteStyle() {
+    const ok = window.confirm(
+      t(
+        `⚠️ "${style.styleNo}" স্টাইলটি স্থায়ীভাবে মুছে ফেলতে চান? এর সব প্রোডাকশন এন্ট্রি, ইয়ার্ন লেজার এবং এক্সেসরিজ লেজার — সবকিছু মুছে যাবে এবং কোনো রিপোর্টে আর দেখা যাবে না। এটা ফিরিয়ে আনা যাবে না।`,
+        `⚠️ Permanently delete style "${style.styleNo}"? All of its production entries, yarn ledger, and accessory ledger will be deleted and will no longer appear in any report. This cannot be undone.`
+      )
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger', 'shipments', 'yarnIssueApprovals', 'ieRecords'];
+      for (const sub of subcollections) {
+        const snap = await getDocs(collection(db, 'styles', id, sub));
+        const docs = snap.docs;
+        // Firestore batches cap at 500 writes — chunk just in case a
+        // style somehow has more entries than that.
+        for (let i = 0; i < docs.length; i += 450) {
+          const batch = writeBatch(db);
+          docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      }
+      await deleteDoc(doc(db, 'styles', id));
+      navigate('/production');
+    } catch (err) {
+      setError(t('স্টাইল মুছে ফেলা যায়নি, আবার চেষ্টা করুন।', 'Could not delete the style, please try again.'));
+      setBusy(false);
+    }
+  }
+
+  if (style === undefined) return <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>;
+  if (style === null) return <EmptyState title={t('স্টাইল পাওয়া যায়নি', 'Style not found')} />;
+
+  const canEditStyle = can(profile?.role, 'style:edit');
+
+  // Yarn consumption report (per yarn item) for this style's knitting
+  // entries — flattens both old-format (single yarnItemId/yarnQty) and
+  // new-format (yarnUsages array, for entries that used more than one
+  // yarn at once) entries into one per-yarn total.
+  const yarnConsumption = (entries || [])
+    .flatMap((e) => (e.yarnUsages?.length > 0 ? e.yarnUsages : e.yarnItemId ? [{ yarnItemId: e.yarnItemId, yarnItemName: e.yarnItemName, yarnQty: e.yarnQty }] : []))
+    .reduce((acc, u) => {
+      acc[u.yarnItemId] = acc[u.yarnItemId] || { name: u.yarnItemName, qty: 0 };
+      acc[u.yarnItemId].qty += Number(u.yarnQty || 0);
+      return acc;
+    }, {});
+  const yarnConsumptionRows = Object.values(yarnConsumption);
+
+  const entryExportColumns = [
+    { key: 'date', label: t('তারিখ', 'Date') },
+    { key: 'stage', label: t('স্টেজ', 'Stage'), render: (r) => stageLabel(r.stage, lang) },
+    { key: 'poNo', label: t('PO', 'PO') },
+    { key: 'colour', label: t('কালার', 'Colour') },
+    { key: 'quantity', label: t('কোয়ান্টিটি', 'Quantity') },
+    { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn'), render: (r) => (r.yarnUsages?.length > 0 ? r.yarnUsages.map((u) => u.yarnItemName).join(', ') : r.yarnItemName || '') },
+    { key: 'yarnQty', label: t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)'), render: (r) => (r.yarnUsages?.length > 0 ? r.yarnUsages.map((u) => `${u.yarnItemName}: ${u.yarnQty}lb`).join(', ') : r.yarnQty || '') },
+    { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
+  ];
+
+  // PO/colour-wise stage totals, built from whatever entries carry a poNo
+  // (older/plain entries stay counted only in the overall stage total
+  // above — they simply don't appear in this breakdown table).
+  const poColourBreakdown = (() => {
+    const map = new Map();
+    (entries || []).forEach((e) => {
+      if (!e.poNo) return;
+      const key = `${e.poNo}||${e.colour || ''}`;
+      if (!map.has(key)) map.set(key, { poNo: e.poNo, colour: e.colour || t('মিশ্র', 'Mixed'), stages: {} });
+      const row = map.get(key);
+      row.stages[e.stage] = (row.stages[e.stage] || 0) + Number(e.quantity || 0);
+    });
+    return Array.from(map.values());
+  })();
+
+  const poColourExportColumns = [
+    { key: 'poNo', label: 'PO' },
+    { key: 'colour', label: t('কালার', 'Colour') },
+    ...STAGES.map((s) => ({ key: `stages.${s.key}`, label: lang === 'en' ? s.labelEn : s.label, render: (r) => r.stages[s.key] || 0 })),
+  ];
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div className="flex items-center justify-between">
+        <Link to="/production" className="inline-flex items-center gap-1 text-sm text-ink-soft hover:text-ink">
+          <ArrowLeft size={16} /> {t('সব স্টাইল', 'All Styles')}
+        </Link>
+        <Link to={`/production/${id}/report`} className="text-sm font-medium text-indigo hover:underline">
+          {t('সম্পূর্ণ রিপোর্ট দেখুন →', 'View Full Report →')}
+        </Link>
+      </div>
+
+      <div className="rounded-lg border border-line bg-surface p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex gap-4">
+            <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-line bg-paper">
+              {style.imageUrl ? (
+                <img src={style.imageUrl} alt="" className="h-full w-full object-cover" />
+              ) : (
+                <ImagePlus size={20} className="text-ink-soft" />
+              )}
+            </div>
+            <div>
+              <h1 className="font-display text-xl font-semibold text-ink">{style.styleNo}</h1>
+              {style.styleName && <p className="text-sm text-ink">{style.styleName}</p>}
+              <p className="text-sm text-ink-soft">{style.buyer}</p>
+              <p className="text-xs text-ink-soft">
+                {style.poNo && <>PO: {style.poNo} · </>}
+                {style.colour && <>{t('কালার', 'Colour')}: {style.colour} · </>}
+                {style.gg && <>GG: {style.gg}</>}
+              </p>
+              {style.yarnComposition && (
+                <p className="mt-1 text-xs text-ink-soft">{t('কম্পোজিশন', 'Composition')}: {style.yarnComposition}</p>
+              )}
+            </div>
+          </div>
+          <div className="text-right text-sm text-ink-soft">
+            <p>{t('অর্ডার', 'Order')}: {Number(style.orderQty).toLocaleString('en-US')} {t('পিস', 'pcs')}</p>
+            {style.orderDate && <p>{t('তারিখ', 'Date')}: {style.orderDate}</p>}
+            {style.shipDate && <p>{t('শিপমেন্ট', 'Shipment')}: {style.shipDate}</p>}
+            <div className="mt-2 flex justify-end gap-3">
+              {canEditStyle && (
+                <button
+                  onClick={() => setEditingStyle(true)}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-indigo hover:underline"
+                >
+                  <Pencil size={13} /> {t('এডিট', 'Edit')}
+                </button>
+              )}
+              {profile?.role === 'admin' && (
+                <button
+                  onClick={handleDeleteStyle}
+                  className="inline-flex items-center gap-1 text-xs font-medium text-red hover:underline"
+                >
+                  <Trash2 size={13} /> {t('ডিলিট', 'Delete')}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        {style.notes && <p className="mt-3 text-sm text-ink-soft">{style.notes}</p>}
+
+        {Array.isArray(style.pos) && style.pos.length > 0 && (
+          <div className="mt-4 border-t border-line pt-4">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+              {t('PO ও কালার-ওয়াইজ ব্রেকডাউন', 'PO & Colour-wise Breakdown')}
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {style.pos.map((po, i) => (
+                <div key={i} className="rounded-md border border-line bg-paper p-3">
+                  <p className="text-sm font-medium text-ink">PO: {po.poNo}</p>
+                  <ul className="mt-1 space-y-0.5 text-xs text-ink-soft">
+                    {po.colours.map((c, j) => (
+                      <li key={j} className="flex justify-between">
+                        <span>{c.colour}</span>
+                        <span>{Number(c.qty).toLocaleString('en-US')}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 border-t border-line pt-1 text-right text-xs font-semibold text-ink">
+                    {t('সাবটোটাল', 'Subtotal')}: {poSubtotal(po).toLocaleString('en-US')}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {editingStyle && (
+        <EditStyleModal style={style} onClose={() => setEditingStyle(false)} />
+      )}
+
+      <div className="rounded-lg border border-line bg-surface p-5">
+        <h2 className="mb-1 font-display text-sm font-semibold text-ink">{t('স্টেজ-ভিত্তিক অগ্রগতি', 'Stage-wise Progress')}</h2>
+        <p className="mb-4 text-xs text-ink-soft">
+          {t(
+            'একটি স্টেজে এন্ট্রি দেওয়া মানেই সেটা পরের স্টেজের জন্য স্বয়ংক্রিয়ভাবে "পাঠানো" হয়ে যায় — যেমন নিটিং ১০০ পিস করলে লিংকিং সর্বোচ্চ ১০০ পিস এন্ট্রি দিতে পারবে, তার বেশি না। "WIP" ব্যাজ দেখায় আগের স্টেজ থেকে কত পিস এখনো এই স্টেজে আসেনি ঢোকানো — অর্থাৎ বাকি আছে। "শেয়ার্ড পুল" ব্যাজ থাকা স্টেজগুলো (যেমন লিংকিং-এর পর ট্রিমিং/মেন্ডিং/ওয়াশ, ইচ্ছেমতো যেকোনোটায় পাঠানো যায় এমন সেটআপে) একই আপস্ট্রিম আউটপুট নিজেদের মধ্যে ভাগ করে নেয় — যেকোনো একটায় এন্ট্রি দিলে বাকিগুলোর জন্য পুল কমে যায়।',
+            'Logging an entry at one stage automatically "sends" it forward to the next — e.g. once Knitting has done 100 pcs, Linking can log at most 100 pcs, no more. The "WIP" badge shows how much has been sent from the previous stage but not yet entered here. Stages tagged "shared pool" (e.g. Trimming/Mending/Wash all set to follow directly from Linking, so a piece can go whichever way it actually went) split the same upstream output between them — logging at any one of them reduces what\'s left for the others.'
+          )}
+        </p>
+        <div className="space-y-4">
+          {STAGES.map((s, i) => {
+            const done = style.stages?.[s.key] || 0;
+            const pct = style.orderQty > 0 ? Math.min(100, Math.round((done / style.orderQty) * 100)) : 0;
+            const overQty = done - Number(style.orderQty || 0);
+            const overPct = style.orderQty > 0 && overQty > 0 ? Math.round((overQty / style.orderQty) * 100) : 0;
+            const prevKey = i > 0 ? effectivePrereqKey(style, s.key, i) : null;
+            const siblings = i > 0 ? siblingStagesSharingPrereq(style, prevKey, s.key) : [];
+            const wip = i > 0 ? Math.max(0, sharedPoolAvailable(style, s.key, i)) : null;
+            return (
+              <div key={s.key}>
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 text-sm">
+                  <span className="text-ink">
+                    {lang === 'en' ? s.labelEn : s.label}
+                    {i > 0 && prevKey !== STAGES[i - 1].key && (
+                      <span className="ml-1.5 rounded-full bg-indigo-soft px-1.5 py-0.5 text-[10px] font-medium text-indigo">
+                        {t('কাস্টম অর্ডার', 'custom order')}: {stageLabel(prevKey, lang)} →
+                      </span>
+                    )}
+                    {i > 0 && siblings.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-amber-soft px-1.5 py-0.5 text-[10px] font-medium text-amber" title={t('এই স্টেজগুলো একই আপস্ট্রিম আউটপুট ভাগ করে নেয়', 'These stages share the same upstream output')}>
+                        {t('শেয়ার্ড পুল', 'shared pool')}: {siblings.map((k) => stageLabel(k, lang)).join(', ')}
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex items-center gap-2 text-ink-soft">
+                    {i > 0 && wip > 0 && (
+                      <span className="rounded-full bg-amber-soft px-2 py-0.5 text-xs font-medium text-amber">
+                        {t('WIP', 'WIP')}: {wip.toLocaleString('en-US')}
+                      </span>
+                    )}
+                    {overPct > 0 && (
+                      <span className="rounded-full bg-red-soft px-2 py-0.5 text-xs font-medium text-red">
+                        +{overPct}% {t('বেশি', 'over')}
+                      </span>
+                    )}
+                    <span>
+                      {done.toLocaleString('en-US')} / {Number(style.orderQty).toLocaleString('en-US')}
+                    </span>
+                  </span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                  <div
+                    className={`h-full rounded-full ${overPct > 0 ? 'bg-red' : 'bg-indigo'}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {poColourBreakdown.length > 0 && (
+        <div className="rounded-lg border border-line bg-surface p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-display text-sm font-semibold text-ink">{t('PO / কালার-ওয়াইজ প্রোডাকশন ব্রেকডাউন', 'PO / Colour-wise Production Breakdown')}</h2>
+            <ExportBar
+              small
+              title={t('PO / কালার-ওয়াইজ প্রোডাকশন', 'PO / Colour-wise Production')}
+              subtitle={`${style.styleNo} · ${style.buyer}`}
+              filename={`po-colour-production-${style.styleNo}`}
+              columns={poColourExportColumns}
+              rows={poColourBreakdown}
+            />
+          </div>
+          <div className="scroll-thin overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-ink-soft">
+                  <th className="py-2 pr-4 font-medium">PO</th>
+                  <th className="py-2 pr-4 font-medium">{t('কালার', 'Colour')}</th>
+                  {STAGES.map((s) => (
+                    <th key={s.key} className="py-2 pr-4 font-medium">{lang === 'en' ? s.labelEn : s.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {poColourBreakdown.map((r, i) => (
+                  <tr key={i} className="border-b border-line last:border-0">
+                    <td className="py-2 pr-4 text-ink">{r.poNo}</td>
+                    <td className="py-2 pr-4 text-ink-soft">{r.colour}</td>
+                    {STAGES.map((s) => (
+                      <td key={s.key} className="py-2 pr-4 text-ink-soft">{(r.stages[s.key] || 0).toLocaleString('en-US')}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {can(profile?.role, 'production:entry') && (
+        <div className="rounded-lg border border-line bg-surface p-5">
+          <h2 className="mb-4 font-display text-sm font-semibold text-ink">{t('প্রোডাকশন এন্ট্রি', 'Production Entry')}</h2>
+          {allowedStages.length === 0 ? (
+            <p className="text-sm text-ink-soft">
+              {t(
+                'আপনাকে এখনো কোনো সেকশন এসাইন করা হয়নি। অ্যাডমিনকে বলুন Admin > User Management থেকে আপনার সেকশন ঠিক করে দিতে।',
+                'No section has been assigned to you yet. Ask an admin to set your section under Admin > User Management.'
+              )}
+            </p>
+          ) : (
+            <form onSubmit={handleAddEntry} className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-4">
+                <Field label={t('তারিখ', 'Date')}>
+                  <input
+                    type="date"
+                    value={entryDate}
+                    onChange={(e) => setEntryDate(e.target.value)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label={t('স্টেজ', 'Stage')}>
+                  <select value={stage} onChange={(e) => setStage(e.target.value)} className={inputClass}>
+                    {allowedStages.map((s) => (
+                      <option key={s.key} value={s.key}>
+                        {lang === 'en' ? s.labelEn : s.label}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label={t('কোয়ান্টিটি', 'Quantity')}>
+                  <input
+                    type="number"
+                    min="1"
+                    value={qty}
+                    onChange={(e) => setQty(e.target.value)}
+                    className={inputClass}
+                  />
+                </Field>
+                <Field label={t('নোট (ঐচ্ছিক)', 'Note (optional)')}>
+                  <input value={note} onChange={(e) => setNote(e.target.value)} className={inputClass} />
+                </Field>
+              </div>
+
+              {Array.isArray(style.pos) && style.pos.length > 0 && (
+                <div className="grid gap-4 rounded-md border border-line bg-paper/50 p-3 sm:grid-cols-2">
+                  <Field label={t('PO (ঐচ্ছিক — কালার-ওয়াইজ ট্র্যাকিং করতে চাইলে দিন)', 'PO (optional — pick to track colour-wise)')}>
+                    <select
+                      value={entryPoNo}
+                      onChange={(e) => {
+                        setEntryPoNo(e.target.value);
+                        setEntryColour('');
+                      }}
+                      className={inputClass}
+                    >
+                      <option value="">{t('সব PO (টোটাল এন্ট্রি)', 'All PO (total entry)')}</option>
+                      {style.pos.map((po, i) => (
+                        <option key={i} value={po.poNo}>{po.poNo}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={t('কালার (ঐচ্ছিক)', 'Colour (optional)')}>
+                    <select
+                      value={entryColour}
+                      onChange={(e) => setEntryColour(e.target.value)}
+                      className={inputClass}
+                      disabled={!entryPoNo}
+                    >
+                      <option value="">{t('সব কালার', 'All colours')}</option>
+                      {(style.pos.find((po) => po.poNo === entryPoNo)?.colours || []).map((c, i) => (
+                        <option key={i} value={c.colour}>{c.colour}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
+
+              {stage === 'knitting' && (
+                <div className="space-y-3 rounded-md border border-line bg-paper/50 p-3">
+                  {totalYarnReady <= 0 ? (
+                    <p className="text-sm text-red">
+                      {t(
+                        'এই স্টাইলের জন্য এখনো কোনো ইয়ার্ন প্রস্তুত নেই — আগে ইয়ার্ন স্টোর থেকে ইস্যু করতে হবে।',
+                        'No yarn is ready for this style yet — the Yarn Store must issue yarn first.'
+                      )}
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-ink">{t('ইয়ার্ন খরচ (একাধিক ইয়ার্ন হতে পারে)', 'Yarn Used (can be more than one)')}</span>
+                        <button type="button" onClick={addYarnRow} className={`${btnSecondary} !px-2.5 !py-1 text-xs`}>
+                          {t('আরেকটি ইয়ার্ন যোগ করুন', 'Add another yarn')}
+                        </button>
+                      </div>
+                      {yarnRows.map((row, i) => (
+                        <div key={i} className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                          <Field label={t('কোন ইয়ার্নের বিপরীতে *', 'Against which yarn *')}>
+                            <select value={row.yarnItemId} onChange={(e) => updateYarnRow(i, { yarnItemId: e.target.value })} className={inputClass}>
+                              <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                              {yarnReadyBalances.map((b) => (
+                                <option key={b.yarnItemId} value={b.yarnItemId}>
+                                  {b.yarnItemName} ({b.ready.toFixed(2)} lb {t('প্রস্তুত', 'ready')})
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label={t('খরচ (lb) *', 'Used (lb) *')}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.yarnQty}
+                              onChange={(e) => updateYarnRow(i, { yarnQty: e.target.value })}
+                              className={`${inputClass} sm:w-32`}
+                              disabled={!row.yarnItemId}
+                            />
+                          </Field>
+                          {yarnRows.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeYarnRow(i)}
+                              className="mb-0.5 rounded-md border border-red/30 bg-red-soft p-2 text-red hover:bg-red/10"
+                              title={t('মুছুন', 'Remove')}
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+
+              <button type="submit" disabled={busy} className={btnPrimary}>
+                {busy ? t('যোগ হচ্ছে…', 'Adding…') : t('এন্ট্রি যোগ করুন', 'Add Entry')}
+              </button>
+            </form>
+          )}
+          {error && <p className="mt-2 text-sm text-red">{error}</p>}
+        </div>
+      )}
+
+      {yarnConsumptionRows.length > 0 && (
+        <div className="rounded-lg border border-line bg-surface p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="font-display text-sm font-semibold text-ink">{t('নিটিং — ইয়ার্ন খরচের রিপোর্ট', 'Knitting — Yarn Consumption Report')}</h2>
+            <ExportBar
+              small
+              title={t('ইয়ার্ন খরচের রিপোর্ট', 'Yarn Consumption Report')}
+              subtitle={`${style.styleNo} · ${style.buyer}`}
+              filename={`yarn-consumption-${style.styleNo}`}
+              columns={[
+                { key: 'name', label: t('ইয়ার্ন', 'Yarn') },
+                { key: 'qty', label: t('মোট খরচ (lb)', 'Total Used (lb)') },
+              ]}
+              rows={yarnConsumptionRows}
+            />
+          </div>
+          <table className="w-full text-sm">
+            <tbody>
+              {yarnConsumptionRows.map((r, i) => (
+                <tr key={i} className="border-b border-line last:border-0">
+                  <td className="py-2 pr-4 text-ink">{r.name}</td>
+                  <td className="py-2 text-ink-soft">{r.qty.toLocaleString('en-US')} lb</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="rounded-lg border border-line bg-surface p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display text-sm font-semibold text-ink">{t('সাম্প্রতিক এন্ট্রি (কবে কোন স্টেজে কত)', 'Recent Entries (when, which stage, how much)')}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={entriesStageFilter} onChange={(e) => setEntriesStageFilter(e.target.value)} className={`${inputClass} !w-auto !py-1.5 text-xs`}>
+              <option value="all">{t('সব স্টেজ', 'All Stages')}</option>
+              {STAGES.map((s) => (
+                <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+              ))}
+            </select>
+            <ExportBar
+              small
+              title={t('প্রোডাকশন এন্ট্রি', 'Production Entries')}
+              subtitle={`${style.styleNo} · ${style.buyer}`}
+              filename={`production-entries-${style.styleNo}`}
+              columns={entryExportColumns}
+              rows={entries || []}
+            />
+          </div>
+        </div>
+        {entries === null ? (
+          <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>
+        ) : entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).length === 0 ? (
+          <EmptyState title={t('এখনো কোনো এন্ট্রি নেই', 'No entries yet')} />
+        ) : (
+          <div className="scroll-thin overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-ink-soft">
+                  <th className="py-2 pr-4 font-medium">{t('তারিখ', 'Date')}</th>
+                  <th className="py-2 pr-4 font-medium">{t('স্টেজ', 'Stage')}</th>
+                  <th className="py-2 pr-4 font-medium">PO / {t('কালার', 'Colour')}</th>
+                  <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                  <th className="py-2 pr-4 font-medium">{t('এন্ট্রি করেছেন', 'Entered By')}</th>
+                  <th className="py-2 pr-4 font-medium"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).map((e) => (
+                  <tr key={e.id} className="border-b border-line last:border-0">
+                    <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
+                    <td className="py-2 pr-4 text-ink">{stageLabel(e.stage, lang)}</td>
+                    <td className="py-2 pr-4 text-ink-soft">
+                      {e.poNo || e.colour ? (
+                        <>{e.poNo}{e.poNo && e.colour ? ' / ' : ''}{e.colour}</>
+                      ) : (
+                        <span className="text-ink-soft/60">{t('টোটাল', 'Total')}</span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 text-ink-soft">
+                      {e.quantity}
+                      {e.yarnUsages?.length > 0 ? (
+                        <span className="ml-1 text-xs text-ink-soft">
+                          ({e.yarnUsages.map((u) => `${u.yarnItemName}: ${u.yarnQty}lb`).join(', ')})
+                        </span>
+                      ) : (
+                        e.yarnItemName && (
+                          <span className="ml-1 text-xs text-ink-soft">
+                            ({e.yarnItemName}: {e.yarnQty}lb)
+                          </span>
+                        )
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 text-ink-soft">{e.enteredBy}</td>
+                    <td className="py-2 pr-4">
+                      {profile?.role === 'admin' && (
+                        <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EditStyleModal({ style, onClose }) {
+  const { t } = useLang();
+  // Styles created before the PO/colour-wise system have no `pos` array —
+  // those keep editing via the old single poNo/colour/orderQty fields, per
+  // factory's decision to not touch old data. New-format styles (with
+  // `pos`) edit via the same PO+colour builder used at creation.
+  const isNewFormat = Array.isArray(style.pos) && style.pos.length > 0;
+  const [pos, setPos] = useState(isNewFormat ? style.pos.map((po) => ({ ...po, colours: po.colours.map((c) => ({ ...c })) })) : [emptyPo()]);
+  const [form, setForm] = useState({
+    orderDate: style.orderDate || '',
+    buyer: style.buyer || '',
+    poNo: style.poNo || '',
+    styleName: style.styleName || '',
+    styleNo: style.styleNo || '',
+    gg: style.gg || '',
+    shipDate: style.shipDate || '',
+    colour: style.colour || '',
+    yarnComposition: style.yarnComposition || '',
+    orderQty: style.orderQty || '',
+    notes: style.notes || '',
+  });
+  const [imageDataUrl, setImageDataUrl] = useState(style.imageUrl || '');
+  // Per-style stage sequence override: normally each stage's prerequisite
+  // is just "the stage before it" in STAGES. Some styles need a different
+  // real-world flow (e.g. attachment must run before sewing rather than
+  // after) — this map lets that be set per style without touching the
+  // global pipeline. Only stages after the first (knitting, which is
+  // yarn-gated, not stage-gated) have a prerequisite at all.
+  const [stagePrereq, setStagePrereq] = useState({ ...(style.stagePrerequisites || {}) });
+  const [showStageOrder, setShowStageOrder] = useState(
+    Object.keys(style.stagePrerequisites || {}).length > 0
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  function update(field, value) {
+    setForm((f) => ({ ...f, [field]: value }));
+  }
+
+  async function handleImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await fileToCompressedDataUrl(file, 700, 0.75);
+      setImageDataUrl(dataUrl);
+    } catch {
+      setError(t('ছবি আপলোড করা যায়নি।', 'Could not upload image.'));
+    }
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError('');
+
+    let payload;
+    if (isNewFormat) {
+      const cleanPos = pos
+        .map((po) => ({
+          poNo: po.poNo.trim(),
+          colours: po.colours
+            .map((c) => ({ colour: c.colour.trim(), qty: Number(c.qty) || 0 }))
+            .filter((c) => c.colour && c.qty > 0),
+        }))
+        .filter((po) => po.poNo && po.colours.length > 0);
+      const summary = posSummary(cleanPos);
+      if (!form.styleNo || !form.buyer || cleanPos.length === 0 || summary.orderQty <= 0) {
+        setError(
+          t(
+            'স্টাইল নম্বর, বায়ার এবং অন্তত একটি PO-তে কালার-ওয়াইজ কোয়ান্টিটি আবশ্যক।',
+            'Style number, buyer, and at least one PO with colour-wise quantity are required.'
+          )
+        );
+        return;
+      }
+      payload = { pos: cleanPos, poNo: summary.poNo, colour: summary.colour, orderQty: summary.orderQty };
+    } else {
+      if (!form.styleNo || !form.buyer || !form.orderQty) {
+        setError(t('স্টাইল নম্বর, বায়ার এবং অর্ডার কোয়ান্টিটি আবশ্যক।', 'Style number, buyer and order quantity are required.'));
+        return;
+      }
+      payload = { poNo: form.poNo || '', colour: form.colour || '', orderQty: Number(form.orderQty) };
+    }
+
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'styles', style.id), {
+        orderDate: form.orderDate || null,
+        buyer: form.buyer,
+        styleName: form.styleName || '',
+        styleNo: form.styleNo,
+        gg: form.gg || '',
+        shipDate: form.shipDate || null,
+        yarnComposition: form.yarnComposition || '',
+        notes: form.notes || '',
+        imageUrl: imageDataUrl || '',
+        stagePrerequisites: stagePrereq,
+        ...payload,
+      });
+      onClose();
+    } catch (err) {
+      setError(t('সেভ করা যায়নি।', 'Could not save.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={t('স্টাইল এডিট করুন', 'Edit Style')} onClose={onClose} wide>
+      <form onSubmit={handleSave} className="space-y-4">
+        <div className="flex items-center gap-4">
+          <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-lg border border-line bg-paper">
+            {imageDataUrl ? (
+              <img src={imageDataUrl} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <ImagePlus size={18} className="text-ink-soft" />
+            )}
+          </div>
+          <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm font-medium text-ink hover:bg-paper">
+            {t('ছবি পরিবর্তন করুন', 'Change photo')}
+            <input type="file" accept="image/*" className="hidden" onChange={handleImage} />
+          </label>
+          {imageDataUrl && (
+            <button type="button" onClick={() => setImageDataUrl('')} className="text-ink-soft hover:text-ink">
+              <X size={16} />
+            </button>
+          )}
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label={t('তারিখ', 'Date')}>
+            <input type="date" className={inputClass} value={form.orderDate} onChange={(e) => update('orderDate', e.target.value)} />
+          </Field>
+          <Field label={t('বায়ার *', 'Buyer *')}>
+            <input className={inputClass} value={form.buyer} onChange={(e) => update('buyer', e.target.value)} />
+          </Field>
+          {!isNewFormat && (
+            <Field label={t('PO নম্বর', 'PO No.')}>
+              <input className={inputClass} value={form.poNo} onChange={(e) => update('poNo', e.target.value)} />
+            </Field>
+          )}
+          <Field label={t('স্টাইল নাম', 'Style Name')}>
+            <input className={inputClass} value={form.styleName} onChange={(e) => update('styleName', e.target.value)} />
+          </Field>
+          <Field label={t('স্টাইল নম্বর *', 'Style Number *')}>
+            <input className={inputClass} value={form.styleNo} onChange={(e) => update('styleNo', e.target.value)} />
+          </Field>
+          <Field label="GG">
+            <input className={inputClass} value={form.gg} onChange={(e) => update('gg', e.target.value)} />
+          </Field>
+          <Field label={t('শিপমেন্ট ডেট', 'Shipment Date')}>
+            <input type="date" className={inputClass} value={form.shipDate} onChange={(e) => update('shipDate', e.target.value)} />
+          </Field>
+          {!isNewFormat && (
+            <Field label={t('কালার', 'Colour')}>
+              <input className={inputClass} value={form.colour} onChange={(e) => update('colour', e.target.value)} />
+            </Field>
+          )}
+          <Field label={t('ইয়ার্ন কম্পোজিশন', 'Yarn Composition')}>
+            <input className={inputClass} value={form.yarnComposition} onChange={(e) => update('yarnComposition', e.target.value)} />
+          </Field>
+          {!isNewFormat && (
+            <Field label={t('অর্ডার কোয়ান্টিটি (পিস) *', 'Order Quantity (pcs) *')}>
+              <input type="number" min="1" className={inputClass} value={form.orderQty} onChange={(e) => update('orderQty', e.target.value)} />
+            </Field>
+          )}
+        </div>
+
+        {isNewFormat && <PoColourEditor pos={pos} onChange={setPos} />}
+
+        <div className="rounded-md border border-line bg-paper/50 p-3">
+          <button
+            type="button"
+            onClick={() => setShowStageOrder((v) => !v)}
+            className="flex w-full items-center justify-between text-sm font-medium text-ink"
+          >
+            <span>{t('স্টেজ অর্ডার কাস্টমাইজ করুন (ঐচ্ছিক)', 'Customize Stage Order (optional)')}</span>
+            <span className="text-xs text-indigo">{showStageOrder ? t('লুকান', 'Hide') : t('দেখান', 'Show')}</span>
+          </button>
+          <p className="mt-1 text-xs text-ink-soft">
+            {t(
+              'সাধারণত প্রতিটা স্টেজ তার আগের স্টেজের উপর নির্ভর করে (নিটিং → লিংকিং → ট্রিমিং …)। কোনো বিশেষ কারণে এই স্টাইলে যদি ক্রম আলাদা হয় (যেমন অ্যাটাচমেন্ট আগে করতে হবে), এখানে সেই স্টেজের জন্য আসল পূর্বশর্ত স্টেজ বেছে নিন। একাধিক স্টেজকেও একই পূর্বশর্ত দেওয়া যায় — যেমন লিংকিং শেষ হওয়ার পর কিছু পিস ট্রিমিং-এ, কিছু সরাসরি মেন্ডিং-এ, কিছু সরাসরি ওয়াশ-এ যেতে পারে এমন হলে, ট্রিমিং/মেন্ডিং/ওয়াশ — তিনটারই পূর্বশর্ত "লিংকিং" সেট করে দিন। তখন এই তিনটা স্টেজ লিংকিং-এর একই আউটপুট নিজেদের মধ্যে ভাগ করে নেবে (একজন বেশি নিলে বাকিদের জন্য কম থাকবে)।',
+              'Normally each stage depends on the one right before it (Knitting → Linking → Trimming …). If this particular style needs a different order for some reason (e.g. Attachment must happen earlier), pick the real prerequisite stage for it here. Several stages can also share the same prerequisite — e.g. if after Linking some pieces go to Trimming, some straight to Mending, and some straight to Wash, set all three (Trimming/Mending/Wash) to have "Linking" as their prerequisite. They will then split Linking\'s output between them (logging more at one leaves less available for the others).'
+            )}
+          </p>
+          {showStageOrder && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {STAGES.slice(1).map((s, i) => {
+                const defaultPrereq = STAGES[STAGES.findIndex((x) => x.key === s.key) - 1].key;
+                return (
+                  <Field key={s.key} label={t(s.label, s.labelEn)}>
+                    <select
+                      className={inputClass}
+                      value={stagePrereq[s.key] || defaultPrereq}
+                      onChange={(e) =>
+                        setStagePrereq((m) => {
+                          const val = e.target.value;
+                          const next = { ...m };
+                          if (val === defaultPrereq) delete next[s.key];
+                          else next[s.key] = val;
+                          return next;
+                        })
+                      }
+                    >
+                      {STAGES.filter((x) => x.key !== s.key).map((x) => (
+                        <option key={x.key} value={x.key}>
+                          {t(x.label, x.labelEn)} {x.key === defaultPrereq ? t('(ডিফল্ট)', '(default)') : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <Field label={t('নোট', 'Notes')}>
+          <textarea className={inputClass} rows={2} value={form.notes} onChange={(e) => update('notes', e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red">{error}</p>}
+        <div className="flex gap-3">
+          <button type="submit" disabled={busy} className={btnPrimary}>
+            {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
+          </button>
+          <button type="button" className={btnSecondary} onClick={onClose}>
+            {t('বাতিল', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}

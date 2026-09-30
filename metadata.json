@@ -1,0 +1,8 @@
+{
+  "name": "Factory ERP — Sweater Factory Management",
+  "description": "Comprehensive sweater factory management system covering styles, inventory, IE, and quality management.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
