@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { doc, setDoc, updateDoc } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { Upload, Save, KeyRound, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Upload, Save, KeyRound, ShieldCheck, CheckCircle2, Trash2, RefreshCw } from 'lucide-react';
 import { db } from '../../firebase';
 import { useSettings } from '../../lib/settingsContext';
 import { useLang } from '../../lib/i18n';
 import { useAuth } from '../../context/AuthContext';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
 import { Field, inputClass, btnPrimary } from '../../components/ui';
+import { clearAllDemoData, restoreDemoData, isDemoDataCleared } from '../../lib/demoData';
 
 export default function Settings() {
   const { settings } = useSettings();
@@ -26,6 +27,8 @@ export default function Settings() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminSaved, setAdminSaved] = useState(false);
   const [adminError, setAdminError] = useState('');
+  const [demoCleared, setDemoCleared] = useState(isDemoDataCleared);
+  const [demoNotice, setDemoNotice] = useState('');
 
   useEffect(() => {
     setForm(settings);
@@ -320,6 +323,68 @@ export default function Settings() {
           <Save size={16} /> {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
         </button>
       </form>
+
+      <div className="mt-6 rounded-lg border border-line bg-surface p-5 space-y-4">
+        <div>
+          <h2 className="font-display text-sm font-semibold text-ink flex items-center gap-2">
+            <Trash2 size={16} className="text-red" />
+            {t('ফ্যাক্টরি ডেমো ডেটা ব্যবস্থাপনা (Delete / Reset Demo Data)', 'Demo Data Management (Delete / Reset)')}
+          </h2>
+          <p className="mt-1 text-xs text-ink-soft">
+            {t(
+              'সফটওয়্যারটি প্রথম চালুর সময় যে নমুনা (Demo) স্টাইল, ডেমো ইয়ার্ন এবং ডেমো এন্ট্রিগুলো যুক্ত ছিল, সেগুলো এক ক্লিকে মুছে একদম খালি ফ্রেশ ফ্যাক্টরি সিস্টেম হিসেবে চালাতে পারবেন।',
+              'The pre-loaded demo styles, sample yarn and demo entries can be permanently cleared to run a 100% clean factory system.'
+            )}
+          </p>
+        </div>
+
+        {demoNotice && (
+          <div className="rounded border border-indigo/30 bg-indigo/10 p-2.5 text-xs text-indigo">
+            {demoNotice}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            onClick={() => {
+              const ok = window.confirm(
+                t(
+                  '⚠️ আপনি কি নিশ্চিত যে সব ডিফল্ট ডেমো ডেটা (স্টাইল, প্রোডাকশন এন্ট্রি, কোয়ালিটি চেক, ইয়ার্ন লেজার) মুছে ফেলতে চান? আপনার তৈরি কোনো নিজস্ব নতুন ডাটা থাকলে তা অপরিবর্তিত থাকবে।',
+                  '⚠️ Are you sure you want to delete all default demo data (styles, production entries, quality checks, yarn ledger)? Any real data you created will remain untouched.'
+                )
+              );
+              if (!ok) return;
+              clearAllDemoData();
+              setDemoCleared(true);
+              setDemoNotice(t('সব ডেমো ডেটা সফলভাবে মুছে ফেলা হয়েছে। সিস্টেম এখন ফ্রেশ।', 'All demo data successfully cleared. System is now fresh.'));
+              setTimeout(() => setDemoNotice(''), 4000);
+            }}
+            className="flex items-center gap-1.5 rounded-md bg-red px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:opacity-90 transition"
+          >
+            <Trash2 size={14} />
+            {t('সব ডেমো ডেটা মুছে ফেলুন (Delete All Demo Data)', 'Delete All Demo Data')}
+          </button>
+
+          {demoCleared && (
+            <button
+              type="button"
+              onClick={() => {
+                const ok = window.confirm(t('ডেমো ডেটা পুনরায় লোড করতে চান?', 'Reload sample demo data?'));
+                if (!ok) return;
+                restoreDemoData();
+                setDemoCleared(false);
+                setDemoNotice(t('ডেমো ডেটা পুনরায় সক্রিয় করা হয়েছে।', 'Demo data re-activated.'));
+                setTimeout(() => setDemoNotice(''), 4000);
+              }}
+              className="flex items-center gap-1.5 rounded-md border border-line bg-surface px-3 py-2 text-xs font-medium text-ink hover:bg-paper transition"
+            >
+              <RefreshCw size={14} />
+              {t('নমুনা ডেটা পুনরায় লোড করুন', 'Reload Sample Data')}
+            </button>
+          )}
+        </div>
+      </div>
 
       <div className="mt-6 rounded-lg border border-line bg-surface p-5">
         <h2 className="font-display text-sm font-semibold text-ink">{t('ডেটা ক্লিনআপ', 'Data Cleanup')}</h2>

@@ -306,5 +306,19 @@ service cloud.firestore {
       allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
       allow update, delete: if hasAdminArea('inventory');
     }
+
+    // Official chalans and digital gate passes
+    match /chalans/{chalanId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
+    // Export packing lists and CBM breakdowns
+    match /packingLists/{listId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
   }
 }

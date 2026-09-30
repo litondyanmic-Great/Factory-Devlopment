@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { Plus, Search, Trash2, ImageOff } from 'lucide-react';
+import { Plus, Search, Trash2, Pencil, ImageOff, Sparkles } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { btnPrimary, EmptyState, ProgressBar, inputClass } from '../../components/ui';
+import { btnPrimary, btnSecondary, EmptyState, ProgressBar, inputClass } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import { can, stageLabel, FINAL_STAGE_KEY } from '../../lib/constants';
 import { deleteStyleCascade } from '../../lib/deleteStyleCascade';
 import { useLang } from '../../lib/i18n';
-import { getLocalStyles, saveLocalStyles } from '../../lib/demoData';
+import { getLocalStyles, saveLocalStyles, clearAllDemoData, isDemoDataCleared } from '../../lib/demoData';
 
 export default function StylesList() {
   const { profile } = useAuth();
@@ -18,19 +18,21 @@ export default function StylesList() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
+    function handleUpdate() {
+      setStyles(getLocalStyles());
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+
     let unsub = () => {};
     try {
       const q = query(collection(db, 'styles'), orderBy('createdAt', 'desc'));
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
-          } else {
-            setStyles(getLocalStyles());
-          }
+          // If Firestore is connected, always honor its list
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setStyles(list);
+          saveLocalStyles(list);
         },
         () => {
           setStyles(getLocalStyles());
@@ -40,7 +42,10 @@ export default function StylesList() {
       setStyles(getLocalStyles());
     }
 
-    return () => unsub();
+    return () => {
+      unsub();
+      window.removeEventListener('factory_erp_data_updated', handleUpdate);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -52,6 +57,10 @@ export default function StylesList() {
     );
   }, [styles, search]);
 
+  const hasDemoStyles = useMemo(() => {
+    return !isDemoDataCleared() && styles.some((s) => s.id?.startsWith('style-'));
+  }, [styles]);
+
   async function handleDelete(e, id, label) {
     e.preventDefault();
     e.stopPropagation();
@@ -62,7 +71,20 @@ export default function StylesList() {
       )
     );
     if (!ok) return;
+    setStyles((prev) => prev.filter((s) => s.id !== id));
     await deleteStyleCascade(id);
+  }
+
+  async function handleClearAllDemo() {
+    const ok = window.confirm(
+      t(
+        '⚠️ আপনি কি সব ডিফল্ট ডেমো স্টাইল ও ডেমো এন্ট্রি মুছে ফেলে একদম ফ্রেশ ফ্যাক্টরি সিস্টেম শুরু করতে চান? (আপনার তৈরি নিজস্ব নতুন ডেটা থাকলে তা থাকবে)',
+        '⚠️ Do you want to delete all default demo styles & demo entries to start with a clean slate? (Any custom data you created will remain)'
+      )
+    );
+    if (!ok) return;
+    clearAllDemoData();
+    setStyles([]);
   }
 
   const exportColumns = [
@@ -86,7 +108,18 @@ export default function StylesList() {
           <h1 className="font-display text-2xl font-semibold text-ink">{t('প্রোডাকশন / স্টাইল সমূহ', 'Production / Styles')}</h1>
           <p className="mt-1 text-sm text-ink-soft">{t('প্রতিটি অর্ডারের স্টেজ-ভিত্তিক অগ্রগতি দেখুন।', 'View stage-wise progress for every order.')}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {hasDemoStyles && profile?.role === 'admin' && (
+            <button
+              type="button"
+              onClick={handleClearAllDemo}
+              className="flex items-center gap-1.5 rounded-md border border-red/40 bg-red-soft/30 px-3 py-1.5 text-xs font-semibold text-red hover:bg-red hover:text-white transition"
+              title={t('সব ডেমো স্টাইল মুছে ফ্রেশ শুরু করুন', 'Clear demo styles to start fresh')}
+            >
+              <Trash2 size={14} />
+              {t('ডেমো ডেটা মুছুন', 'Delete Demo Data')}
+            </button>
+          )}
           <ExportBar
             title={t('স্টাইল তালিকা', 'Styles List')}
             filename="styles-list"

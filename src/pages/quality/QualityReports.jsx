@@ -9,7 +9,11 @@ import ExportBar from '../../components/ExportBar';
 import { STAGES, BLOCKS, stageLabel, qualityTone } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
-import { getLocalQualityChecks, saveLocalQualityChecks } from '../../lib/demoData';
+import {
+  getLocalQualityChecks,
+  saveLocalQualityChecks,
+  deleteLocalQualityCheck,
+} from '../../lib/demoData';
 
 export default function QualityReports() {
   const { profile } = useAuth();
@@ -23,22 +27,30 @@ export default function QualityReports() {
   const [search, setSearch] = useState('');
 
   useEffect(() => {
+    function handleUpdate() {
+      setChecks(getLocalQualityChecks());
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+
     let unsub = () => {};
     try {
       const q = query(collection(db, 'qualityChecks'), orderBy('date', 'desc'));
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setChecks(list);
-            saveLocalQualityChecks(list);
-          }
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setChecks(list);
+          saveLocalQualityChecks(list);
         },
-        () => {}
+        () => {
+          setChecks(getLocalQualityChecks());
+        }
       );
     } catch {}
-    return () => unsub();
+    return () => {
+      unsub();
+      window.removeEventListener('factory_erp_data_updated', handleUpdate);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -56,7 +68,19 @@ export default function QualityReports() {
   async function handleDelete(c) {
     const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
     if (!ok) return;
-    await deleteDoc(doc(db, 'qualityChecks', c.id));
+
+    // 1. Immediately update UI state
+    setChecks((prev) => prev.filter((item) => item.id !== c.id));
+
+    // 2. Remove from local storage
+    deleteLocalQualityCheck(c.id);
+
+    // 3. Try Firestore delete
+    try {
+      await deleteDoc(doc(db, 'qualityChecks', c.id));
+    } catch (fbErr) {
+      console.warn('Firestore delete QC notice:', fbErr);
+    }
   }
 
   const defectLabel = (record, key) => (record.defectLabels && record.defectLabels[key]) || key;

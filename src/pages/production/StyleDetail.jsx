@@ -15,23 +15,28 @@ import {
   increment,
   serverTimestamp,
 } from 'firebase/firestore';
-import { ArrowLeft, Pencil, Trash2, ImagePlus, X } from 'lucide-react';
+import { ArrowLeft, Pencil, Trash2, ImagePlus, X, Camera, QrCode } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, btnDanger, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
+import CameraQrScanner from '../../components/CameraQrScanner';
 import { STAGES, can, canEnterSection, stageLabel } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import {
   getLocalStyles,
   saveLocalStyles,
+  deleteLocalStyle,
   getLocalItems,
   saveLocalItems,
   getLocalProductionEntries,
   saveLocalProductionEntries,
+  deleteLocalProductionEntry,
+  updateLocalProductionEntry,
   getLocalYarnLedger,
   saveLocalYarnLedger,
 } from '../../lib/demoData';
+import { deleteStyleCascade } from '../../lib/deleteStyleCascade';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
 import PoColourEditor, { emptyPo, posSummary, poSubtotal } from '../../components/PoColourEditor';
 
@@ -115,6 +120,36 @@ export default function StyleDetail() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [editingStyle, setEditingStyle] = useState(false);
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [showCameraScanner, setShowCameraScanner] = useState(false);
+
+  function handleQrScan(decoded) {
+    if (!decoded) return;
+    const clean = decoded.trim();
+    try {
+      const stored = localStorage.getItem('factory_erp_bundles_data');
+      if (stored) {
+        const bundles = JSON.parse(stored);
+        const match = bundles.find((b) => b.bundleNo === clean || b.id === clean);
+        if (match) {
+          if (match.qty) setQty(String(match.qty));
+          if (match.size) setNote(`Bundle: ${match.bundleNo} (${match.size}, ${match.color || ''})`);
+          else setNote(`Bundle: ${match.bundleNo}`);
+          setSuccess(t(`কিউআর কোড স্ক্যান সফল! বান্ডেল ${match.bundleNo} পাওয়া গেছে (${match.qty} pcs)।`, `QR scan successful! Bundle ${match.bundleNo} found (${match.qty} pcs).`));
+          setShowCameraScanner(false);
+          return;
+        }
+      }
+    } catch {}
+
+    const qtyMatch = clean.match(/qty[:\s=]+(\d+)/i) || clean.match(/(\d+)\s*pcs/i);
+    if (qtyMatch) {
+      setQty(qtyMatch[1]);
+    }
+    setNote((prev) => (prev ? `${prev} | QR: ${clean}` : `QR: ${clean}`));
+    setSuccess(t(`কিউআর কোড স্ক্যান সম্পন্ন: ${clean}`, `QR code scanned: ${clean}`));
+    setShowCameraScanner(false);
+  }
 
   function updateYarnRow(idx, patch) {
     setYarnRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
@@ -397,16 +432,77 @@ export default function StyleDetail() {
     }
   }
 
+  async function handleSaveEditEntry(updated) {
+    if (!editingEntry) return;
+    const oldQty = Number(editingEntry.quantity || 0);
+    const newQty = Number(updated.quantity || 0);
+    const diff = newQty - oldQty;
+
+    // 1. Immediately update entries state
+    const newEntryObj = {
+      ...editingEntry,
+      quantity: newQty,
+      date: updated.date,
+      note: updated.note || '',
+    };
+    setEntries((prev) => prev.map((e) => (e.id === editingEntry.id ? newEntryObj : e)));
+
+    // 2. Update local production entries
+    updateLocalProductionEntry(editingEntry.id, {
+      quantity: newQty,
+      date: updated.date,
+      note: updated.note || '',
+    });
+
+    // 3. Update style stage counter if quantity changed
+    if (diff !== 0) {
+      const currentTotal = Number(style?.stages?.[editingEntry.stage] || 0);
+      const updatedStages = {
+        ...(style?.stages || {}),
+        [editingEntry.stage]: Math.max(0, currentTotal + diff),
+      };
+      const updatedStyle = { ...style, stages: updatedStages };
+      setStyle(updatedStyle);
+      const allStyles = getLocalStyles();
+      saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
+
+      // 4. Try Firestore sync in background
+      try {
+        await updateDoc(doc(db, 'styles', id), {
+          [`stages.${editingEntry.stage}`]: increment(diff),
+        });
+      } catch (fbErr) {
+        console.warn('Firestore stage update notice:', fbErr);
+      }
+    }
+
+    try {
+      await updateDoc(doc(db, 'styles', id, 'productionEntries', editingEntry.id), {
+        quantity: newQty,
+        date: updated.date,
+        note: updated.note || '',
+      });
+    } catch (fbErr) {
+      console.warn('Firestore edit entry notice:', fbErr);
+    }
+
+    setEditingEntry(null);
+  }
+
   async function handleDeleteEntry(entry) {
-    const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
+    const ok = window.confirm(
+      t(
+        `⚠️ ${stageLabel(entry.stage, lang)} স্টেজের ${entry.quantity} পিসের এন্ট্রি মুছে ফেলতে চান? স্টাইলের মোট সংখ্যা থেকে এটি সমন্বয় হবে।`,
+        `⚠️ Delete this ${stageLabel(entry.stage, lang)} entry of ${entry.quantity} pcs? The style stage total will adjust.`
+      )
+    );
     if (!ok) return;
 
     // 1. Immediately update UI state
     setEntries((prev) => prev.filter((e) => e.id !== entry.id));
 
     // 2. Update local storage
-    const allEntries = getLocalProductionEntries();
-    saveLocalProductionEntries(allEntries.filter((e) => e.id !== entry.id));
+    deleteLocalProductionEntry(entry.id);
 
     // 3. Decrement style stage count
     const updatedStages = {
@@ -433,13 +529,6 @@ export default function StyleDetail() {
     }
   }
 
-  // Firestore never auto-deletes a document's subcollections, so deleting
-  // just the style doc would leave its productionEntries/yarnLedger/
-  // accessoryLedger documents orphaned — and since Reports, the
-  // Dashboard, Yarn Blocks and Item Detail all read those via
-  // collectionGroup() queries across every style, an orphaned style's
-  // data would keep showing up everywhere forever. This fetches and
-  // deletes every subcollection document first, then the style itself.
   async function handleDeleteStyle() {
     const ok = window.confirm(
       t(
@@ -450,23 +539,11 @@ export default function StyleDetail() {
     if (!ok) return;
     setBusy(true);
     try {
-      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger', 'shipments', 'yarnIssueApprovals', 'ieRecords'];
-      for (const sub of subcollections) {
-        const snap = await getDocs(collection(db, 'styles', id, sub));
-        const docs = snap.docs;
-        // Firestore batches cap at 500 writes — chunk just in case a
-        // style somehow has more entries than that.
-        for (let i = 0; i < docs.length; i += 450) {
-          const batch = writeBatch(db);
-          docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
-          await batch.commit();
-        }
-      }
-      await deleteDoc(doc(db, 'styles', id));
+      await deleteStyleCascade(id);
       navigate('/production');
     } catch (err) {
-      setError(t('স্টাইল মুছে ফেলা যায়নি, আবার চেষ্টা করুন।', 'Could not delete the style, please try again.'));
-      setBusy(false);
+      deleteLocalStyle(id);
+      navigate('/production');
     }
   }
 
@@ -715,7 +792,17 @@ export default function StyleDetail() {
 
       {can(profile?.role, 'production:entry') && (
         <div className="rounded-lg border border-line bg-surface p-5">
-          <h2 className="mb-4 font-display text-sm font-semibold text-ink">{t('প্রোডাকশন এন্ট্রি', 'Production Entry')}</h2>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-display text-sm font-semibold text-ink">{t('প্রোডাকশন এন্ট্রি', 'Production Entry')}</h2>
+            <button
+              type="button"
+              onClick={() => setShowCameraScanner(true)}
+              className="flex items-center gap-1.5 rounded-md border border-indigo/40 bg-indigo/10 px-3 py-1.5 text-xs font-semibold text-indigo hover:bg-indigo hover:text-white transition cursor-pointer"
+            >
+              <Camera size={14} />
+              {t('ক্যামেরা দিয়ে কিউআর স্ক্যান এন্ট্রি', 'Scan QR Code via Camera')}
+            </button>
+          </div>
           {allowedStages.length === 0 ? (
             <p className="text-sm text-ink-soft">
               {t(
@@ -951,11 +1038,28 @@ export default function StyleDetail() {
                     </td>
                     <td className="py-2 pr-4 text-ink-soft">{e.enteredBy}</td>
                     <td className="py-2 pr-4">
-                      {profile?.role === 'admin' && (
-                        <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                      <div className="flex items-center justify-end gap-2">
+                        {(profile?.role === 'admin' || can(profile?.role, 'production:entry')) && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingEntry(e)}
+                            className="rounded p-1 text-indigo hover:bg-indigo/10"
+                            title={t('এন্ট্রি সংশোধন / এডিট করুন', 'Edit / Modify entry')}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        )}
+                        {profile?.role === 'admin' && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEntry(e)}
+                            className="rounded p-1 text-red hover:bg-red/10"
+                            title={t('এন্ট্রি ডিলিট করুন', 'Delete entry')}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -964,6 +1068,29 @@ export default function StyleDetail() {
           </div>
         )}
       </div>
+
+      {editingStyle && <EditStyleModal style={style} onClose={() => setEditingStyle(false)} />}
+      {editingEntry && (
+        <EditEntryModal
+          entry={editingEntry}
+          onClose={() => setEditingEntry(null)}
+          onSave={handleSaveEditEntry}
+        />
+      )}
+      {showCameraScanner && (
+        <Modal title={t('ক্যামেরা দিয়ে কিউআর স্ক্যান — প্রোডাকশন এন্ট্রি', 'Scan QR Code — Production Entry')} onClose={() => setShowCameraScanner(false)}>
+          <div className="space-y-4">
+            <CameraQrScanner
+              onScan={handleQrScan}
+              onClose={() => setShowCameraScanner(false)}
+              autoCloseOnScan={true}
+            />
+            <p className="text-center text-xs text-ink-soft">
+              {t('ক্যামেরার সামনে বান্ডেল কিউআর কোড বা বারকোড ধরুন। স্ক্যান হওয়ার সাথে সাথে কোয়ান্টিটি ও নোট নিজে থেকেই পূরণ হবে।', 'Point camera at the bundle QR or barcode. Quantity and bundle details will be auto-filled.')}
+            </p>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -1193,6 +1320,74 @@ function EditStyleModal({ style, onClose }) {
           </button>
           <button type="button" className={btnSecondary} onClick={onClose}>
             {t('বাতিল', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function EditEntryModal({ entry, onClose, onSave }) {
+  const { t, lang } = useLang();
+  const [qty, setQty] = useState(entry.quantity || '');
+  const [date, setDate] = useState(entry.date || '');
+  const [note, setNote] = useState(entry.note || '');
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!qty || Number(qty) <= 0) return;
+    onSave({
+      quantity: Number(qty),
+      date,
+      note,
+    });
+  }
+
+  return (
+    <Modal title={t('প্রোডাকশন এন্ট্রি পরিবর্তন / এডিট করুন', 'Edit / Modify Production Entry')} onClose={onClose}>
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="rounded bg-paper p-3 text-xs text-ink-soft space-y-1">
+          <div><strong>{t('স্টেজ', 'Stage')}:</strong> {stageLabel(entry.stage, lang)}</div>
+          {entry.poNo && <div><strong>PO:</strong> {entry.poNo} {entry.colour ? `(${entry.colour})` : ''}</div>}
+          <div><strong>{t('পূর্বের কোয়ান্টিটি', 'Previous Quantity')}:</strong> {entry.quantity} pcs</div>
+        </div>
+
+        <Field label={t('নতুন কোয়ান্টিটি (Pcs)', 'New Quantity (Pcs)')}>
+          <input
+            type="number"
+            min="1"
+            required
+            value={qty}
+            onChange={(e) => setQty(e.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        <Field label={t('তারিখ', 'Date')}>
+          <input
+            type="date"
+            required
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className={inputClass}
+          />
+        </Field>
+
+        <Field label={t('নোট (ঐচ্ছিক)', 'Note (optional)')}>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            className={inputClass}
+            placeholder={t('সংশোধনের কারণ বা মন্তব্য', 'Reason for change or remarks')}
+          />
+        </Field>
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button type="button" onClick={onClose} className={btnSecondary}>
+            {t('বাতিল', 'Cancel')}
+          </button>
+          <button type="submit" className={btnPrimary}>
+            {t('সংরক্ষণ করুন', 'Save Changes')}
           </button>
         </div>
       </form>

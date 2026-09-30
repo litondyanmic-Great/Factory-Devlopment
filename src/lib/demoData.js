@@ -432,114 +432,486 @@ export const DEFAULT_SAMPLE_ACC_LEDGER = [
   },
 ];
 
+export const DEFAULT_SAMPLE_IE_TARGETS = [
+  {
+    styleId: 'style-hm-01',
+    styleNo: 'HM-2026/SW-01',
+    styleName: "Men's Crew Neck Pullover",
+    buyer: 'H&M',
+    stage: 'knitting',
+    dailyTarget: 600,
+    hourlyTarget: 75,
+    smv: 8.5,
+    manpower: 12,
+    workingHours: 8,
+    targetEfficiency: 85,
+    notes: 'Gauge 12 GG automated Shima Seiki machines',
+    updatedAt: '2026-09-20T08:00:00.000Z',
+  },
+  {
+    styleId: 'style-zr-02',
+    styleNo: 'ZR-2026/CD-04',
+    styleName: "Women's Cable Knit Cardigan",
+    buyer: 'Zara',
+    stage: 'knitting',
+    dailyTarget: 400,
+    hourlyTarget: 50,
+    smv: 12.0,
+    manpower: 10,
+    workingHours: 8,
+    targetEfficiency: 80,
+    notes: 'Complex 7GG cable jacquard pattern',
+    updatedAt: '2026-09-21T08:00:00.000Z',
+  },
+  {
+    styleId: 'style-nx-03',
+    styleNo: 'NX-2026/HD-09',
+    styleName: 'Jacquard Heavy Knit Hoodie',
+    buyer: 'Next UK',
+    stage: 'linking',
+    dailyTarget: 350,
+    hourlyTarget: 44,
+    smv: 14.5,
+    manpower: 11,
+    workingHours: 8,
+    targetEfficiency: 75,
+    notes: 'Dial linking section line 3',
+    updatedAt: '2026-09-22T08:00:00.000Z',
+  },
+];
+
+export const DEFAULT_SAMPLE_IE_RECORDS = [
+  {
+    id: 'ie-rec-01',
+    styleId: 'style-hm-01',
+    styleNo: 'HM-2026/SW-01',
+    styleName: "Men's Crew Neck Pullover",
+    buyer: 'H&M',
+    date: '2026-09-25',
+    stage: 'knitting',
+    smv: 8.5,
+    manpower: 12,
+    workingHours: 8,
+    targetEfficiencyPct: 85,
+    standardTargetQty: 678,
+    targetQty: 576,
+    actualQty: 590,
+    achievedEfficiencyPct: 87.0,
+    notes: 'Day shift ran smoothly without yarn breakage',
+    enteredBy: 'IE In-Charge',
+    createdAt: '2026-09-25T17:00:00.000Z',
+  },
+  {
+    id: 'ie-rec-02',
+    styleId: 'style-zr-02',
+    styleNo: 'ZR-2026/CD-04',
+    styleName: "Women's Cable Knit Cardigan",
+    buyer: 'Zara',
+    date: '2026-09-25',
+    stage: 'knitting',
+    smv: 12.0,
+    manpower: 10,
+    workingHours: 8,
+    targetEfficiencyPct: 80,
+    standardTargetQty: 400,
+    targetQty: 320,
+    actualQty: 335,
+    achievedEfficiencyPct: 83.8,
+    notes: 'Needle change took 25 mins in morning',
+    enteredBy: 'IE In-Charge',
+    createdAt: '2026-09-25T17:30:00.000Z',
+  },
+  {
+    id: 'ie-rec-03',
+    styleId: 'style-nx-03',
+    styleNo: 'NX-2026/HD-09',
+    styleName: 'Jacquard Heavy Knit Hoodie',
+    buyer: 'Next UK',
+    date: '2026-09-25',
+    stage: 'linking',
+    smv: 14.5,
+    manpower: 11,
+    workingHours: 8,
+    targetEfficiencyPct: 75,
+    standardTargetQty: 364,
+    targetQty: 273,
+    actualQty: 250,
+    achievedEfficiencyPct: 68.7,
+    notes: '2 linking operators absent on line 2',
+    enteredBy: 'IE In-Charge',
+    createdAt: '2026-09-25T18:00:00.000Z',
+  },
+  {
+    id: 'ie-rec-04',
+    styleId: 'style-hm-01',
+    styleNo: 'HM-2026/SW-01',
+    styleName: "Men's Crew Neck Pullover",
+    buyer: 'H&M',
+    date: '2026-09-24',
+    stage: 'knitting',
+    smv: 8.5,
+    manpower: 12,
+    workingHours: 8,
+    targetEfficiencyPct: 85,
+    standardTargetQty: 678,
+    targetQty: 576,
+    actualQty: 560,
+    achievedEfficiencyPct: 82.6,
+    notes: 'Machine calibration completed',
+    enteredBy: 'IE In-Charge',
+    createdAt: '2026-09-24T17:00:00.000Z',
+  },
+];
+
+export const DEFAULT_SAMPLE_PACKING_LISTS = [
+  {
+    id: 'pack-hm-01',
+    styleNo: 'HM-2026/SW-01',
+    styleName: "Men's Crew Neck Pullover",
+    buyer: 'H&M Hennes & Mauritz GBC AB',
+    poNo: 'PO-994821',
+    invoiceNo: 'INV-2026-EXP-088',
+    destination: 'Hamburg Port, Germany',
+    countryOfOrigin: 'Bangladesh',
+    cartonLengthCm: 60,
+    cartonWidthCm: 40,
+    cartonHeightCm: 30,
+    cartonNetWeightKg: 12.0,
+    cartonGrossWeightKg: 13.5,
+    sizes: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
+    updatedAt: '2026-09-29T10:00:00.000Z',
+    rows: [
+      { id: 1, ctnFrom: 1, ctnTo: 20, color: 'Navy Blue', sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 }, pcsPerCtn: 30 },
+      { id: 2, ctnFrom: 21, ctnTo: 45, color: 'Navy Blue', sizeRatios: { XS: 0, S: 6, M: 12, L: 8, XL: 4, XXL: 0 }, pcsPerCtn: 30 },
+      { id: 3, ctnFrom: 46, ctnTo: 70, color: 'Heather Grey', sizeRatios: { XS: 4, S: 8, M: 10, L: 6, XL: 2, XXL: 0 }, pcsPerCtn: 30 },
+      { id: 4, ctnFrom: 71, ctnTo: 90, color: 'Heather Grey', sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 }, pcsPerCtn: 30 },
+    ],
+  },
+  {
+    id: 'pack-zr-02',
+    styleNo: 'ZR-2026/CD-04',
+    styleName: "Women's Cable Knit Cardigan",
+    buyer: 'Zara Inditex Group',
+    poNo: 'PO-881240',
+    invoiceNo: 'INV-2026-EXP-092',
+    destination: 'Barcelona Port, Spain',
+    countryOfOrigin: 'Bangladesh',
+    cartonLengthCm: 55,
+    cartonWidthCm: 38,
+    cartonHeightCm: 32,
+    cartonNetWeightKg: 11.5,
+    cartonGrossWeightKg: 13.0,
+    sizes: ['S', 'M', 'L', 'XL'],
+    updatedAt: '2026-09-29T14:30:00.000Z',
+    rows: [
+      { id: 1, ctnFrom: 1, ctnTo: 30, color: 'Ivory Cream', sizeRatios: { S: 6, M: 12, L: 8, XL: 4 }, pcsPerCtn: 30 },
+      { id: 2, ctnFrom: 31, ctnTo: 60, color: 'Sage Green', sizeRatios: { S: 5, M: 10, L: 10, XL: 5 }, pcsPerCtn: 30 },
+    ],
+  },
+];
+
+export function isDemoDataCleared() {
+  try {
+    return localStorage.getItem('factory_erp_demo_cleared') === 'true';
+  } catch {
+    return false;
+  }
+}
+
+export function clearAllDemoData() {
+  try {
+    localStorage.setItem('factory_erp_demo_cleared', 'true');
+    localStorage.setItem('factory_erp_local_styles', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_items', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_prod_entries', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_quality_checks', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_zero_thread', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_yarn_ledger', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_acc_ledger', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_packing_lists', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_ie_targets', JSON.stringify([]));
+    localStorage.setItem('factory_erp_local_ie_records', JSON.stringify([]));
+    localStorage.setItem('factory_erp_bundles_data', JSON.stringify([]));
+    localStorage.setItem('factory_erp_chalans_data', JSON.stringify([]));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
+    return true;
+  } catch (e) {
+    console.error('Error clearing demo data:', e);
+    return false;
+  }
+}
+
+export function restoreDemoData() {
+  try {
+    localStorage.removeItem('factory_erp_demo_cleared');
+    localStorage.setItem('factory_erp_local_styles', JSON.stringify(DEFAULT_SAMPLE_STYLES));
+    localStorage.setItem('factory_erp_local_items', JSON.stringify(DEFAULT_SAMPLE_ITEMS));
+    localStorage.setItem('factory_erp_local_users', JSON.stringify(DEFAULT_SAMPLE_USERS));
+    localStorage.setItem('factory_erp_local_prod_entries', JSON.stringify(DEFAULT_SAMPLE_PRODUCTION_ENTRIES));
+    localStorage.setItem('factory_erp_local_quality_checks', JSON.stringify(DEFAULT_SAMPLE_QUALITY_CHECKS));
+    localStorage.setItem('factory_erp_local_zero_thread', JSON.stringify(DEFAULT_SAMPLE_ZERO_THREAD));
+    localStorage.setItem('factory_erp_local_yarn_ledger', JSON.stringify(DEFAULT_SAMPLE_YARN_LEDGER));
+    localStorage.setItem('factory_erp_local_acc_ledger', JSON.stringify(DEFAULT_SAMPLE_ACC_LEDGER));
+    localStorage.setItem('factory_erp_local_packing_lists', JSON.stringify(DEFAULT_SAMPLE_PACKING_LISTS));
+    localStorage.setItem('factory_erp_local_ie_targets', JSON.stringify(DEFAULT_SAMPLE_IE_TARGETS));
+    localStorage.setItem('factory_erp_local_ie_records', JSON.stringify(DEFAULT_SAMPLE_IE_RECORDS));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function getLocalStyles() {
   try {
     const raw = localStorage.getItem('factory_erp_local_styles');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_STYLES;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_STYLES;
 }
 
 export function saveLocalStyles(styles) {
   try {
     localStorage.setItem('factory_erp_local_styles', JSON.stringify(styles));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function deleteLocalStyle(styleId) {
+  const styles = getLocalStyles().filter((s) => s.id !== styleId);
+  saveLocalStyles(styles);
+  const entries = getLocalProductionEntries().filter((e) => e.styleId !== styleId);
+  saveLocalProductionEntries(entries);
+  const yarn = getLocalYarnLedger().filter((y) => y.styleId !== styleId);
+  saveLocalYarnLedger(yarn);
+  const acc = getLocalAccLedger().filter((a) => a.styleId !== styleId);
+  saveLocalAccLedger(acc);
+  return styles;
+}
+
+export function updateLocalStyle(styleId, updatedData) {
+  const styles = getLocalStyles().map((s) => (s.id === styleId ? { ...s, ...updatedData } : s));
+  saveLocalStyles(styles);
+  return styles;
 }
 
 export function getLocalItems() {
   try {
     const raw = localStorage.getItem('factory_erp_local_items');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_ITEMS;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ITEMS;
 }
 
 export function saveLocalItems(items) {
   try {
     localStorage.setItem('factory_erp_local_items', JSON.stringify(items));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function deleteLocalItem(itemId) {
+  const items = getLocalItems().filter((i) => i.id !== itemId);
+  saveLocalItems(items);
+  return items;
+}
+
+export function updateLocalItem(itemId, updatedData) {
+  const items = getLocalItems().map((i) => (i.id === itemId ? { ...i, ...updatedData } : i));
+  saveLocalItems(items);
+  return items;
 }
 
 export function getLocalUsers() {
   try {
     const raw = localStorage.getItem('factory_erp_local_users');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_USERS;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_USERS;
 }
 
 export function saveLocalUsers(users) {
   try {
     localStorage.setItem('factory_erp_local_users', JSON.stringify(users));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
 }
 
 export function getLocalProductionEntries() {
   try {
     const raw = localStorage.getItem('factory_erp_local_prod_entries');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_PRODUCTION_ENTRIES;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_PRODUCTION_ENTRIES;
 }
 
 export function saveLocalProductionEntries(entries) {
   try {
     localStorage.setItem('factory_erp_local_prod_entries', JSON.stringify(entries));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function deleteLocalProductionEntry(entryId) {
+  const entries = getLocalProductionEntries().filter((e) => e.id !== entryId);
+  saveLocalProductionEntries(entries);
+  return entries;
+}
+
+export function updateLocalProductionEntry(entryId, updatedData) {
+  const entries = getLocalProductionEntries().map((e) => (e.id === entryId ? { ...e, ...updatedData } : e));
+  saveLocalProductionEntries(entries);
+  return entries;
 }
 
 export function getLocalQualityChecks() {
   try {
     const raw = localStorage.getItem('factory_erp_local_quality_checks');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_QUALITY_CHECKS;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_QUALITY_CHECKS;
 }
 
 export function saveLocalQualityChecks(checks) {
   try {
     localStorage.setItem('factory_erp_local_quality_checks', JSON.stringify(checks));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function deleteLocalQualityCheck(checkId) {
+  const checks = getLocalQualityChecks().filter((c) => c.id !== checkId);
+  saveLocalQualityChecks(checks);
+  return checks;
 }
 
 export function getLocalZeroThread() {
   try {
     const raw = localStorage.getItem('factory_erp_local_zero_thread');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_ZERO_THREAD;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ZERO_THREAD;
 }
 
 export function saveLocalZeroThread(data) {
   try {
     localStorage.setItem('factory_erp_local_zero_thread', JSON.stringify(data));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
 }
 
 export function getLocalYarnLedger() {
   try {
     const raw = localStorage.getItem('factory_erp_local_yarn_ledger');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_YARN_LEDGER;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_YARN_LEDGER;
 }
 
 export function saveLocalYarnLedger(data) {
   try {
     localStorage.setItem('factory_erp_local_yarn_ledger', JSON.stringify(data));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function deleteLocalYarnLedger(id) {
+  const data = getLocalYarnLedger().filter((y) => y.id !== id);
+  saveLocalYarnLedger(data);
+  return data;
 }
 
 export function getLocalAccLedger() {
   try {
     const raw = localStorage.getItem('factory_erp_local_acc_ledger');
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return DEFAULT_SAMPLE_ACC_LEDGER;
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ACC_LEDGER;
 }
 
 export function saveLocalAccLedger(data) {
   try {
     localStorage.setItem('factory_erp_local_acc_ledger', JSON.stringify(data));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
+}
+
+export function getLocalPackingLists() {
+  try {
+    const raw = localStorage.getItem('factory_erp_local_packing_lists');
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
+  } catch {}
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_PACKING_LISTS;
+}
+
+export function saveLocalPackingLists(lists) {
+  try {
+    localStorage.setItem('factory_erp_local_packing_lists', JSON.stringify(lists));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
+  } catch {}
+}
+
+export function deleteLocalPackingList(id) {
+  const current = getLocalPackingLists().filter((p) => p.id !== id);
+  saveLocalPackingLists(current);
+  return current;
+}
+
+export function getLocalIETargets() {
+  try {
+    const raw = localStorage.getItem('factory_erp_local_ie_targets');
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
+  } catch {}
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_IE_TARGETS;
+}
+
+export function saveLocalIETargets(targets) {
+  try {
+    localStorage.setItem('factory_erp_local_ie_targets', JSON.stringify(targets));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
+  } catch {}
+}
+
+export function deleteLocalIETarget(styleId) {
+  const current = getLocalIETargets().filter((t) => t.styleId !== styleId);
+  saveLocalIETargets(current);
+  return current;
+}
+
+export function getLocalIERecords() {
+  try {
+    const raw = localStorage.getItem('factory_erp_local_ie_records');
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
+  } catch {}
+  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_IE_RECORDS;
+}
+
+export function saveLocalIERecords(records) {
+  try {
+    localStorage.setItem('factory_erp_local_ie_records', JSON.stringify(records));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
+  } catch {}
+}
+
+export function deleteLocalIERecord(id) {
+  const current = getLocalIERecords().filter((r) => r.id !== id);
+  saveLocalIERecords(current);
+  return current;
+}
+
+export function updateLocalIERecord(id, updatedData) {
+  const current = getLocalIERecords().map((r) => (r.id === id ? { ...r, ...updatedData } : r));
+  saveLocalIERecords(current);
+  return current;
 }

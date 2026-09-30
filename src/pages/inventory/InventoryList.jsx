@@ -11,6 +11,7 @@ import { useLang } from '../../lib/i18n';
 import {
   getLocalItems,
   saveLocalItems,
+  deleteLocalItem,
   getLocalYarnLedger,
   saveLocalYarnLedger,
   getLocalAccLedger,
@@ -26,22 +27,32 @@ export default function InventoryList() {
   const [filter, setFilter] = useState('all');
 
   useEffect(() => {
+    function handleUpdate() {
+      setItems(getLocalItems());
+      setYarnLedger(getLocalYarnLedger());
+      setAccLedger(getLocalAccLedger());
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+
     let unsub = () => {};
     try {
       const q = query(collection(db, 'inventoryItems'), orderBy('name'));
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setItems(list);
-            saveLocalItems(list);
-          }
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setItems(list);
+          saveLocalItems(list);
         },
-        () => {}
+        () => {
+          setItems(getLocalItems());
+        }
       );
     } catch {}
-    return () => unsub();
+    return () => {
+      unsub();
+      window.removeEventListener('factory_erp_data_updated', handleUpdate);
+    };
   }, []);
 
   // Two single collectionGroup queries (not one per item) — this is what
@@ -113,7 +124,19 @@ export default function InventoryList() {
       )
     );
     if (!ok) return;
-    await deleteDoc(doc(db, 'inventoryItems', id));
+
+    // 1. Immediately update UI state
+    setItems((prev) => prev.filter((i) => i.id !== id));
+
+    // 2. Remove from local storage
+    deleteLocalItem(id);
+
+    // 3. Try Firestore delete
+    try {
+      await deleteDoc(doc(db, 'inventoryItems', id));
+    } catch (fbErr) {
+      console.warn('Firestore delete item notice:', fbErr);
+    }
   }
 
   const exportColumns = [

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   FileText,
   Printer,
@@ -11,7 +11,13 @@ import {
   Shield,
   ArrowRight,
   Search,
+  Pencil,
+  Trash2,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
+import { db } from '../../firebase';
+import { collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
@@ -113,6 +119,34 @@ export default function ChalanGatePass() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingChalanId, setEditingChalanId] = useState(null);
+  const [chalanToDelete, setChalanToDelete] = useState(null);
+  const [toastNotice, setToastNotice] = useState('');
+
+  // Sync with Firestore collection 'chalans' when available
+  useEffect(() => {
+    try {
+      const q = collection(db, 'chalans');
+      const unsubscribe = onSnapshot(
+        q,
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+            // Sort by date / time descending
+            list.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.time || '').localeCompare(a.time || ''));
+            setChalans(list);
+            saveStoredChalans(list);
+          }
+        },
+        (err) => {
+          console.warn('Firestore chalans snapshot fallback:', err);
+        }
+      );
+      return () => unsubscribe();
+    } catch (e) {
+      console.warn('Firestore not initialized for chalans:', e);
+    }
+  }, []);
 
   // New Chalan Form State
   const [form, setForm] = useState({
@@ -124,7 +158,11 @@ export default function ChalanGatePass() {
     driverPhone: '',
     purpose: '',
     isReturnable: false,
+    date: new Date().toISOString().slice(0, 10),
+    time: new Date().toTimeString().slice(0, 5),
     items: [{ desc: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
+    preparedBy: '',
+    approvedBy: '',
   });
 
   const companyName = lang === 'en' ? settings?.companyNameEn || settings?.companyName : settings?.companyName;
@@ -141,15 +179,83 @@ export default function ChalanGatePass() {
   const filteredChalans = useMemo(() => {
     return chalans.filter((c) => {
       const matchSearch =
-        c.chalanNo.toLowerCase().includes(search.toLowerCase()) ||
-        c.gatePassNo.toLowerCase().includes(search.toLowerCase()) ||
-        c.receiverName.toLowerCase().includes(search.toLowerCase()) ||
-        c.vehicleNo.toLowerCase().includes(search.toLowerCase());
+        (c.chalanNo || '').toLowerCase().includes(search.toLowerCase()) ||
+        (c.gatePassNo || '').toLowerCase().includes(search.toLowerCase()) ||
+        (c.receiverName || '').toLowerCase().includes(search.toLowerCase()) ||
+        (c.vehicleNo || '').toLowerCase().includes(search.toLowerCase());
 
       const matchType = typeFilter === 'all' || c.type === typeFilter;
       return matchSearch && matchType;
     });
   }, [chalans, search, typeFilter]);
+
+  function handleOpenCreateModal() {
+    setEditingChalanId(null);
+    setForm({
+      type: 'subcontract',
+      receiverName: '',
+      receiverAddress: '',
+      vehicleNo: '',
+      driverName: '',
+      driverPhone: '',
+      purpose: '',
+      isReturnable: false,
+      date: new Date().toISOString().slice(0, 10),
+      time: new Date().toTimeString().slice(0, 5),
+      items: [{ desc: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
+      preparedBy: profile?.name || user?.displayName || 'Store Officer',
+      approvedBy: 'Production Manager',
+    });
+    setIsModalOpen(true);
+  }
+
+  function handleOpenEditModal(chalan) {
+    setEditingChalanId(chalan.id);
+    setForm({
+      chalanNo: chalan.chalanNo,
+      gatePassNo: chalan.gatePassNo,
+      type: chalan.type || 'subcontract',
+      receiverName: chalan.receiverName || '',
+      receiverAddress: chalan.receiverAddress || '',
+      vehicleNo: chalan.vehicleNo || '',
+      driverName: chalan.driverName || '',
+      driverPhone: chalan.driverPhone || '',
+      purpose: chalan.purpose || '',
+      isReturnable: Boolean(chalan.isReturnable),
+      date: chalan.date || new Date().toISOString().slice(0, 10),
+      time: chalan.time || new Date().toTimeString().slice(0, 5),
+      items: (chalan.items || []).map((it) => ({ ...it })),
+      preparedBy: chalan.preparedBy || profile?.name || user?.displayName || 'Store Officer',
+      approvedBy: chalan.approvedBy || 'Production Manager',
+    });
+    setIsModalOpen(true);
+  }
+
+  async function handleConfirmDeleteChalan() {
+    if (!chalanToDelete) return;
+    const target = chalanToDelete;
+    const updated = chalans.filter((c) => c.id !== target.id);
+    setChalans(updated);
+    saveStoredChalans(updated);
+    if (selectedChalan?.id === target.id) {
+      setSelectedChalan(null);
+    }
+    setChalanToDelete(null);
+
+    try {
+      await deleteDoc(doc(db, 'chalans', target.id));
+    } catch (err) {
+      console.warn('Firestore chalan delete fallback:', err);
+    }
+
+    setToastNotice(
+      t(
+        `"${target.chalanNo}" চালান ও ডিজিটাল গেটপাস সফলভাবে মুছে ফেলা হয়েছে।`,
+        `Chalan & Gate Pass "${target.chalanNo}" permanently deleted.`
+      )
+    );
+    setTimeout(() => setToastNotice(''), 4000);
+  }
 
   function handleAddItem() {
     setForm((prev) => ({
@@ -174,14 +280,58 @@ export default function ChalanGatePass() {
     });
   }
 
-  function handleCreateChalan(e) {
+  async function handleCreateChalan(e) {
     e.preventDefault();
     const typeObj = CHALAN_TYPES.find((t) => t.key === form.type);
+
+    if (editingChalanId) {
+      const existing = chalans.find((c) => c.id === editingChalanId);
+      const updatedChalan = {
+        ...existing,
+        chalanNo: form.chalanNo || existing?.chalanNo,
+        gatePassNo: form.gatePassNo || existing?.gatePassNo,
+        type: form.type,
+        typeLabel: typeObj?.label || existing?.typeLabel || 'Chalan',
+        receiverName: form.receiverName,
+        receiverAddress: form.receiverAddress || 'N/A',
+        vehicleNo: form.vehicleNo || 'N/A',
+        driverName: form.driverName || 'N/A',
+        driverPhone: form.driverPhone || 'N/A',
+        purpose: form.purpose || 'Official Delivery',
+        isReturnable: form.isReturnable,
+        date: form.date || existing?.date,
+        time: form.time || existing?.time,
+        items: form.items.map((it, idx) => ({ ...it, id: it.id || idx + 1 })),
+        preparedBy: form.preparedBy || existing?.preparedBy || 'Store Incharge',
+        approvedBy: form.approvedBy || existing?.approvedBy || 'Authorized Signatory',
+        updatedAt: new Date().toISOString(),
+      };
+
+      const updated = chalans.map((c) => (c.id === editingChalanId ? updatedChalan : c));
+      setChalans(updated);
+      saveStoredChalans(updated);
+
+      try {
+        await setDoc(doc(db, 'chalans', updatedChalan.id), updatedChalan, { merge: true });
+      } catch (err) {
+        console.warn('Firestore chalan update fallback:', err);
+      }
+
+      setIsModalOpen(false);
+      setEditingChalanId(null);
+      if (selectedChalan?.id === editingChalanId) {
+        setSelectedChalan(updatedChalan);
+      }
+      setToastNotice(t('চালান ও গেটপাস তথ্য সফলভাবে আপডেট করা হয়েছে।', 'Chalan & Gate Pass updated successfully.'));
+      setTimeout(() => setToastNotice(''), 3500);
+      return;
+    }
+
     const num = Math.floor(1000 + Math.random() * 9000);
     const chalanNo = `CH-2026-${num}`;
     const gatePassNo = `GP-2026-${num}`;
-    const dateStr = new Date().toISOString().slice(0, 10);
-    const timeStr = new Date().toTimeString().slice(0, 5);
+    const dateStr = form.date || new Date().toISOString().slice(0, 10);
+    const timeStr = form.time || new Date().toTimeString().slice(0, 5);
 
     const newChalan = {
       id: `ch-${Date.now()}`,
@@ -200,15 +350,25 @@ export default function ChalanGatePass() {
       isReturnable: form.isReturnable,
       status: 'dispatched',
       items: form.items.map((it, idx) => ({ ...it, id: idx + 1 })),
-      preparedBy: profile?.name || user?.displayName || 'Store Incharge',
-      approvedBy: 'Authorized Signatory',
+      preparedBy: form.preparedBy || profile?.name || user?.displayName || 'Store Incharge',
+      approvedBy: form.approvedBy || 'Authorized Signatory',
+      createdAt: new Date().toISOString(),
     };
 
     const updated = [newChalan, ...chalans];
     setChalans(updated);
     saveStoredChalans(updated);
+
+    try {
+      await setDoc(doc(db, 'chalans', newChalan.id), newChalan);
+    } catch (err) {
+      console.warn('Firestore chalan create fallback:', err);
+    }
+
     setIsModalOpen(false);
     setSelectedChalan(newChalan);
+    setToastNotice(t('নতুন চালান ও ডিজিটাল গেটপাস তৈরি ও সংরক্ষিত হয়েছে।', 'New Chalan created and saved.'));
+    setTimeout(() => setToastNotice(''), 3500);
   }
 
   function downloadChalanDoc() {
@@ -326,7 +486,7 @@ export default function ChalanGatePass() {
                 <button
                   type="button"
                   onClick={() => window.print()}
-                  className="flex items-center gap-1.5 rounded bg-indigo px-4 py-2 text-xs font-bold text-white shadow hover:bg-indigo-deep"
+                  className="flex items-center gap-1.5 rounded bg-indigo px-4 py-2 text-xs font-bold text-white shadow hover:bg-indigo-deep cursor-pointer"
                 >
                   <Printer size={15} />
                   {t('প্রিন্ট চালান (Print)', 'Print Chalan')}
@@ -334,15 +494,35 @@ export default function ChalanGatePass() {
                 <button
                   type="button"
                   onClick={downloadChalanDoc}
-                  className="flex items-center gap-1.5 rounded border border-indigo px-3 py-2 text-xs font-semibold text-indigo hover:bg-indigo/5"
+                  className="flex items-center gap-1.5 rounded border border-indigo px-3 py-2 text-xs font-semibold text-indigo hover:bg-indigo/5 cursor-pointer"
                 >
                   <FileText size={15} />
                   {t('ডাউনলোড ফাইল', 'Download File')}
                 </button>
                 <button
                   type="button"
+                  onClick={() => {
+                    const toEdit = selectedChalan;
+                    setSelectedChalan(null);
+                    handleOpenEditModal(toEdit);
+                  }}
+                  className="flex items-center gap-1.5 rounded border border-indigo/40 px-3 py-2 text-xs font-semibold text-indigo hover:bg-indigo/10 cursor-pointer"
+                >
+                  <Pencil size={14} />
+                  {t('চালান এডিট করুন', 'Edit Chalan')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChalanToDelete(selectedChalan)}
+                  className="flex items-center gap-1.5 rounded border border-red/40 bg-red/5 px-3 py-2 text-xs font-semibold text-red hover:bg-red hover:text-white cursor-pointer transition"
+                >
+                  <Trash2 size={14} />
+                  {t('মুছে ফেলুন', 'Delete Chalan')}
+                </button>
+                <button
+                  type="button"
                   onClick={() => setSelectedChalan(null)}
-                  className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-700 hover:bg-gray-100"
+                  className="rounded border border-gray-300 px-3 py-2 text-xs text-gray-700 hover:bg-gray-100 cursor-pointer"
                 >
                   ✕ {t('বন্ধ করুন', 'Close')}
                 </button>
@@ -457,8 +637,8 @@ export default function ChalanGatePass() {
 
         <button
           type="button"
-          onClick={() => setIsModalOpen(true)}
-          className={`${btnPrimary} flex items-center gap-1.5 !text-xs`}
+          onClick={handleOpenCreateModal}
+          className={`${btnPrimary} flex items-center gap-1.5 !text-xs cursor-pointer`}
         >
           <Plus size={15} />
           {t('নতুন চালান তৈরি করুন', 'Create New Chalan')}
@@ -539,14 +719,35 @@ export default function ChalanGatePass() {
                     {c.gatePassNo}
                   </td>
                   <td className="py-3 pr-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedChalan(c)}
-                      className="inline-flex items-center gap-1 rounded bg-indigo px-3 py-1.5 text-xs font-semibold text-white shadow hover:bg-indigo-deep"
-                    >
-                      <Printer size={13} />
-                      {t('চালান দেখুন / প্রিন্ট', 'View & Print')}
-                    </button>
+                    <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedChalan(c)}
+                        className="inline-flex items-center gap-1.5 rounded bg-indigo px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-deep cursor-pointer transition"
+                        title={t('চালান দেখুন ও প্রিন্ট করুন', 'View & Print')}
+                      >
+                        <Printer size={13} />
+                        <span>{t('দেখুন / প্রিন্ট', 'View & Print')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditModal(c)}
+                        className="inline-flex items-center gap-1 rounded border border-indigo/40 bg-indigo/5 px-2.5 py-1.5 text-xs font-semibold text-indigo hover:bg-indigo hover:text-white transition cursor-pointer"
+                        title={t('চালান সংশোধন / এডিট করুন', 'Edit Chalan')}
+                      >
+                        <Pencil size={13} />
+                        <span>{t('এডিট', 'Edit')}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChalanToDelete(c)}
+                        className="inline-flex items-center gap-1 rounded border border-red/40 bg-red/5 px-2.5 py-1.5 text-xs font-semibold text-red hover:bg-red hover:text-white transition cursor-pointer"
+                        title={t('চালান মুছে ফেলুন', 'Delete Chalan')}
+                      >
+                        <Trash2 size={13} />
+                        <span>{t('ডিলিট', 'Delete')}</span>
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -556,14 +757,44 @@ export default function ChalanGatePass() {
       </div>
       </div>
 
-      {/* CREATE CHALAN MODAL */}
+      {/* CREATE / EDIT CHALAN MODAL */}
       {isModalOpen && (
         <Modal
-          title={t('নতুন অফিশিয়াল চালান তৈরি করুন', 'Create Official Chalan & Gate Pass')}
-          onClose={() => setIsModalOpen(false)}
+          title={
+            editingChalanId
+              ? t(`চালান ও গেটপাস সংশোধন — ${form.chalanNo || ''}`, `Edit Chalan & Gate Pass — ${form.chalanNo || ''}`)
+              : t('নতুন অফিশিয়াল চালান তৈরি করুন', 'Create Official Chalan & Gate Pass')
+          }
+          onClose={() => {
+            setIsModalOpen(false);
+            setEditingChalanId(null);
+          }}
           wide
         >
           <form onSubmit={handleCreateChalan} className="space-y-4">
+            {editingChalanId && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-paper p-3 rounded border border-line">
+                <Field label={t('চালান নম্বর (Chalan No)', 'Chalan No')}>
+                  <input
+                    type="text"
+                    required
+                    className={inputClass}
+                    value={form.chalanNo || ''}
+                    onChange={(e) => setForm((f) => ({ ...f, chalanNo: e.target.value }))}
+                  />
+                </Field>
+                <Field label={t('গেটপাস নম্বর (Gate Pass No)', 'Gate Pass No')}>
+                  <input
+                    type="text"
+                    required
+                    className={inputClass}
+                    value={form.gatePassNo || ''}
+                    onChange={(e) => setForm((f) => ({ ...f, gatePassNo: e.target.value }))}
+                  />
+                </Field>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label={t('চালানের ধরন *', 'Chalan Type *')}>
                 <select
@@ -592,15 +823,37 @@ export default function ChalanGatePass() {
               </Field>
             </div>
 
-            <Field label={t('প্রাপকের ঠিকানা', 'Receiver Address')}>
-              <input
-                type="text"
-                placeholder="Plot #, Road #, City / Area"
-                className={inputClass}
-                value={form.receiverAddress}
-                onChange={(e) => setForm((f) => ({ ...f, receiverAddress: e.target.value }))}
-              />
-            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <Field label={t('প্রাপকের ঠিকানা', 'Receiver Address')}>
+                  <input
+                    type="text"
+                    placeholder="Plot #, Road #, City / Area"
+                    className={inputClass}
+                    value={form.receiverAddress}
+                    onChange={(e) => setForm((f) => ({ ...f, receiverAddress: e.target.value }))}
+                  />
+                </Field>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label={t('তারিখ', 'Date')}>
+                  <input
+                    type="date"
+                    className={inputClass}
+                    value={form.date}
+                    onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                  />
+                </Field>
+                <Field label={t('সময়', 'Time')}>
+                  <input
+                    type="time"
+                    className={inputClass}
+                    value={form.time}
+                    onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))}
+                  />
+                </Field>
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label={t('গাড়ির নম্বর', 'Vehicle No.')}>
@@ -724,20 +977,129 @@ export default function ChalanGatePass() {
               </label>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-line">
+              <Field label={t('প্রস্তুতকারী (Prepared By)', 'Prepared By')}>
+                <input
+                  type="text"
+                  placeholder="Store Officer / Incharge"
+                  className={inputClass}
+                  value={form.preparedBy || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, preparedBy: e.target.value }))}
+                />
+              </Field>
+              <Field label={t('অনুমোদনকারী (Approved By)', 'Approved By')}>
+                <input
+                  type="text"
+                  placeholder="Production Manager / Factory GM"
+                  className={inputClass}
+                  value={form.approvedBy || ''}
+                  onChange={(e) => setForm((f) => ({ ...f, approvedBy: e.target.value }))}
+                />
+              </Field>
+            </div>
+
             <div className="flex justify-end gap-2 pt-2 border-t border-line">
               <button
                 type="button"
-                onClick={() => setIsModalOpen(false)}
+                onClick={() => {
+                  setIsModalOpen(false);
+                  setEditingChalanId(null);
+                }}
                 className={btnSecondary}
               >
                 {t('বাতিল', 'Cancel')}
               </button>
               <button type="submit" className={btnPrimary}>
-                {t('চালান সেভ ও প্রিন্ট প্রিভিউ', 'Save & Preview Chalan')}
+                {editingChalanId ? t('পরিবর্তন সংরক্ষণ করুন', 'Save Changes') : t('চালান সেভ ও প্রিন্ট প্রিভিউ', 'Save & Preview Chalan')}
               </button>
             </div>
           </form>
         </Modal>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL */}
+      {chalanToDelete && (
+        <Modal
+          title={t('চালান মুছে ফেলা নিশ্চিতকরণ', 'Confirm Delete Chalan')}
+          onClose={() => setChalanToDelete(null)}
+        >
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-lg border border-red/30 bg-red/5 p-4 text-xs text-red">
+              <AlertTriangle size={20} className="shrink-0 text-red mt-0.5" />
+              <div>
+                <p className="font-semibold text-sm mb-1">
+                  {t('আপনি কি নিশ্চিত যে এই চালানটি মুছে ফেলতে চান?', 'Are you sure you want to permanently delete this chalan?')}
+                </p>
+                <p className="text-ink-soft">
+                  {t(
+                    'এটি মুছে ফেললে চালান ও ডিজিটাল গেটপাস সিস্টেম থেকে স্থায়ীভাবে বাদ যাবে। এই অপারেশন ফিরিয়ে আনা যাবে না।',
+                    'This action cannot be undone. The chalan and digital gate pass will be permanently removed from the system.'
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-line bg-paper p-3 text-xs space-y-2">
+              <div className="flex justify-between border-b border-line/60 pb-1.5">
+                <span className="text-ink-soft">{t('চালান নম্বর:', 'Chalan No:')}</span>
+                <span className="font-mono font-bold text-indigo">{chalanToDelete.chalanNo}</span>
+              </div>
+              <div className="flex justify-between border-b border-line/60 pb-1.5">
+                <span className="text-ink-soft">{t('গেটপাস নম্বর:', 'Gate Pass No:')}</span>
+                <span className="font-mono text-ink">{chalanToDelete.gatePassNo}</span>
+              </div>
+              <div className="flex justify-between border-b border-line/60 pb-1.5">
+                <span className="text-ink-soft">{t('চালানের ধরন:', 'Chalan Type:')}</span>
+                <span className="text-ink font-medium">{chalanToDelete.typeLabel || chalanToDelete.type}</span>
+              </div>
+              <div className="flex justify-between border-b border-line/60 pb-1.5">
+                <span className="text-ink-soft">{t('প্রাপক / গন্তব্য:', 'Delivered To:')}</span>
+                <span className="font-semibold text-ink">{chalanToDelete.receiverName}</span>
+              </div>
+              <div className="flex justify-between border-b border-line/60 pb-1.5">
+                <span className="text-ink-soft">{t('তারিখ ও সময়:', 'Date & Time:')}</span>
+                <span className="text-ink">{chalanToDelete.date} • {chalanToDelete.time}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink-soft">{t('আইটেম সংখ্যা:', 'Total Items:')}</span>
+                <span className="text-ink font-semibold">{chalanToDelete.items?.length || 0} {t('প্রকার পণ্য', 'items')}</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-line">
+              <button
+                type="button"
+                onClick={() => setChalanToDelete(null)}
+                className={btnSecondary}
+              >
+                {t('বাতিল', 'Cancel')}
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteChalan}
+                className="flex items-center gap-1.5 rounded-lg bg-red px-4 py-2 text-xs font-semibold text-white shadow hover:opacity-90 cursor-pointer transition"
+              >
+                <Trash2 size={14} />
+                {t('হ্যাঁ, চালানটি মুছে ফেলুন', 'Yes, Delete Chalan')}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {toastNotice && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3 rounded-lg border border-indigo/40 bg-surface shadow-2xl p-4 text-xs font-medium text-ink">
+          <CheckCircle2 size={18} className="text-green shrink-0" />
+          <span>{toastNotice}</span>
+          <button
+            type="button"
+            onClick={() => setToastNotice('')}
+            className="ml-2 text-ink-soft hover:text-ink font-bold cursor-pointer"
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
     </div>
   );

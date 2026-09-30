@@ -8,7 +8,7 @@ import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Pill, Modal } 
 import ExportBar from '../../components/ExportBar';
 import { can, hasAreaAdmin, ITEM_TYPES, COMMON_UNITS, YARN_UNIT } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
-import { getLocalItems, getLocalYarnLedger, getLocalAccLedger } from '../../lib/demoData';
+import { getLocalItems, saveLocalItems, deleteLocalItem, getLocalYarnLedger, getLocalAccLedger } from '../../lib/demoData';
 
 // Stock for an item is now ALWAYS derived live from the same style-scoped
 // ledgers that Style Yarn/Accessory Tracking write to (yarnLedger /
@@ -142,7 +142,10 @@ export default function ItemDetail() {
       )
     );
     if (!ok) return;
-    await deleteDoc(doc(db, 'inventoryItems', id));
+    deleteLocalItem(id);
+    try {
+      await deleteDoc(doc(db, 'inventoryItems', id));
+    } catch {}
     navigate('/inventory');
   }
 

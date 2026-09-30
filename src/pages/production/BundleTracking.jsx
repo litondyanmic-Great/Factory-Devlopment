@@ -23,12 +23,15 @@ import {
   Plus,
   AlertCircle,
   Tag,
+  Trash2,
 } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { useLang } from '../../lib/i18n';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal, Pill, StatCard } from '../../components/ui';
+import CameraQrScanner from '../../components/CameraQrScanner';
 import { STAGES, stageLabel } from '../../lib/constants';
+import { isDemoDataCleared } from '../../lib/demoData';
 
 const LOCAL_STORAGE_KEY = 'factory_erp_bundles_data';
 
@@ -136,14 +139,16 @@ const INITIAL_DEMO_BUNDLES = [
 function getStoredBundles() {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw !== null) return JSON.parse(raw);
+    if (isDemoDataCleared()) return [];
   } catch {}
-  return INITIAL_DEMO_BUNDLES;
+  return isDemoDataCleared() ? [] : INITIAL_DEMO_BUNDLES;
 }
 
 function saveStoredBundles(list) {
   try {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(list));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
 }
 
@@ -173,9 +178,39 @@ export default function BundleTracking() {
   const [scannedBundle, setScannedBundle] = useState(null);
   const [scanMessage, setScanMessage] = useState({ text: '', type: '' });
   const [operatorName, setOperatorName] = useState(profile?.name || '');
+  const [useCamera, setUseCamera] = useState(false);
 
   // QR Code Cache for Print View
   const [qrCodeUrls, setQrCodeUrls] = useState({});
+
+  useEffect(() => {
+    function handleUpdate() {
+      setBundles(getStoredBundles());
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+    return () => window.removeEventListener('factory_erp_data_updated', handleUpdate);
+  }, []);
+
+  function handleDeleteBundle(id) {
+    const ok = window.confirm(t('এই বান্ডেল টিকিটটি মুছে ফেলতে চান?', 'Delete this bundle ticket?'));
+    if (!ok) return;
+    const updated = bundles.filter((b) => b.id !== id);
+    setBundles(updated);
+    saveStoredBundles(updated);
+  }
+
+  function handleClearAllBundles() {
+    const ok = window.confirm(
+      t(
+        '⚠️ সব ডেমো বান্ডেল মুছে ফেলতে চান?',
+        '⚠️ Delete all demo bundles?'
+      )
+    );
+    if (!ok) return;
+    const updated = bundles.filter((b) => !b.id.startsWith('bnd-'));
+    setBundles(updated);
+    saveStoredBundles(updated);
+  }
 
   useEffect(() => {
     // Load styles
@@ -419,10 +454,39 @@ export default function BundleTracking() {
                 {t('কিউআর স্ক্যানার ও ফ্লোর এন্ট্রি', 'QR Code Floor Scanner & Advancement')}
               </h2>
               <p className="text-xs text-ink-soft">
-                {t('বারকোড/কিউআর স্ক্যানার গান দিয়ে স্ক্যান করুন অথবা সরাসরি বান্ডেল কোড লিখে এন্টার চাপুন।', 'Scan using a barcode gun/camera or type the bundle number below.')}
+                {t('বারকোড/কিউআর স্ক্যানার গান বা মোবাইলের ক্যামেরা দিয়ে স্ক্যান করুন অথবা সরাসরি বান্ডেল কোড লিখুন।', 'Scan using a barcode gun or live camera, or type bundle code below.')}
               </p>
             </div>
           </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-paper p-2.5 rounded-lg border border-line">
+            <span className="text-xs font-semibold text-ink flex items-center gap-1.5">
+              <Camera size={15} className="text-indigo" />
+              {t('ক্যামেরা স্ক্যানিং মোড:', 'Camera Scanning Mode:')}
+            </span>
+            <button
+              type="button"
+              onClick={() => setUseCamera((prev) => !prev)}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition cursor-pointer ${
+                useCamera
+                  ? 'bg-red text-white hover:bg-red/90'
+                  : 'bg-indigo text-white hover:bg-indigo-deep shadow-sm'
+              }`}
+            >
+              <Camera size={14} />
+              {useCamera ? t('ক্যামেরা বন্ধ করুন', 'Close Camera') : t('লাইভ ক্যামেরা চালু করুন', 'Open Camera Scanner')}
+            </button>
+          </div>
+
+          {useCamera && (
+            <CameraQrScanner
+              onScan={(code) => {
+                setScanInput(code);
+                handleLookup(code);
+              }}
+              onClose={() => setUseCamera(false)}
+            />
+          )}
 
           <div className="space-y-3">
             <div className="flex gap-2">
