@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   doc,
+  getDoc,
+  setDoc,
   onSnapshot,
   collection,
   query,
@@ -168,10 +170,26 @@ export default function StyleDetail() {
   useEffect(() => {
     let unsub = () => {};
     try {
+      const styleRef = doc(db, 'styles', id);
       unsub = onSnapshot(
-        doc(db, 'styles', id),
-        (snap) => {
-          if (snap.exists()) setStyle({ id: snap.id, ...snap.data() });
+        styleRef,
+        async (snap) => {
+          if (snap.exists()) {
+            const data = { id: snap.id, ...snap.data() };
+            setStyle(data);
+            const all = getLocalStyles();
+            saveLocalStyles(all.map((s) => (s.id === id ? data : s)));
+          } else {
+            // Style not in Firestore yet! Auto-seed from local styles so all users can see & update it
+            const localStyle = getLocalStyles().find((s) => s.id === id);
+            if (localStyle) {
+              try {
+                await setDoc(styleRef, { ...localStyle, createdAt: serverTimestamp() }, { merge: true });
+              } catch (e) {
+                console.warn('Auto-seed style notice:', e);
+              }
+            }
+          }
         },
         () => {}
       );
@@ -186,7 +204,10 @@ export default function StyleDetail() {
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) setEntries(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setEntries(list);
+          const other = getLocalProductionEntries().filter((e) => e.styleId !== id);
+          saveLocalProductionEntries([...list, ...other]);
         },
         () => {}
       );
@@ -221,6 +242,43 @@ export default function StyleDetail() {
     } catch {}
     return () => unsub();
   }, [id]);
+
+  // Derive live, realtime-updated stage values that seamlessly reflect
+  // both style.stages AND any newly logged production entries from any user:
+  const liveStages = useMemo(() => {
+    const stageMap = { ...(style?.stages || {}) };
+    STAGES.forEach((s) => {
+      if (typeof stageMap[s.key] !== 'number') stageMap[s.key] = 0;
+    });
+
+    // Sum all entries received for each stage (from realtime Firestore & local cache)
+    const entriesSumByStage = {};
+    STAGES.forEach((s) => {
+      entriesSumByStage[s.key] = 0;
+    });
+    (entries || []).forEach((e) => {
+      if (e.stage && typeof entriesSumByStage[e.stage] === 'number') {
+        entriesSumByStage[e.stage] += Number(e.quantity || 0);
+      }
+    });
+
+    // Seamlessly ensure live stage total is at least the sum of all logged entries
+    STAGES.forEach((s) => {
+      if (entriesSumByStage[s.key] > stageMap[s.key]) {
+        stageMap[s.key] = entriesSumByStage[s.key];
+      }
+    });
+
+    return stageMap;
+  }, [style?.stages, entries]);
+
+  const effectiveStyle = useMemo(() => {
+    if (!style) return style;
+    return {
+      ...style,
+      stages: liveStages,
+    };
+  }, [style, liveStages]);
 
   async function handleAddEntry(e) {
     e.preventDefault();
@@ -274,24 +332,11 @@ export default function StyleDetail() {
       }
     } else if (stageIndex > 0) {
       // Every later stage is capped by how much WIP its prerequisite stage
-      // has actually produced — a stage can't "invent" pieces that were
-      // never sent forward from its prerequisite. By default the
-      // prerequisite is just "the stage before it" in STAGES, but a style
-      // can override this per stage (Edit Style > Customize Stage Order),
-      // e.g. so Trimming, Mending AND Wash can all be set to draw
-      // straight from Linking — a piece can go whichever way it actually
-      // went on the floor, operator's choice at entry time.
-      //
-      // When more than one stage shares the same prerequisite like that,
-      // they're drawing from the SAME pool of WIP, not separate ones — so
-      // the cap must be shared: total logged across Trimming + Mending +
-      // Wash together can never exceed what Linking actually produced,
-      // otherwise the same pieces could be double-counted as available to
-      // more than one of them at once.
-      const available = sharedPoolAvailable(style, stage, stageIndex);
+      // has actually produced — evaluated against live effective progress
+      const available = sharedPoolAvailable(effectiveStyle, stage, stageIndex);
       if (n > available + 0.0001) {
-        const prevKey = style.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
-        const siblings = siblingStagesSharingPrereq(style, prevKey, stage);
+        const prevKey = effectiveStyle?.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
+        const siblings = siblingStagesSharingPrereq(effectiveStyle, prevKey, stage);
         setError(
           siblings.length > 0
             ? t(
@@ -363,12 +408,12 @@ export default function StyleDetail() {
       saveLocalProductionEntries([entryData, ...allEntries]);
 
       // 3. Update style stage counter locally
-      const currentStageTotal = Number(style?.stages?.[stage] || 0) + n;
+      const currentStageTotal = Number(effectiveStyle?.stages?.[stage] || 0) + n;
       const updatedStyle = {
-        ...style,
+        ...(effectiveStyle || {}),
         productionStarted: true,
         stages: {
-          ...(style?.stages || {}),
+          ...(effectiveStyle?.stages || {}),
           [stage]: currentStageTotal,
         },
       };
@@ -376,22 +421,51 @@ export default function StyleDetail() {
       const allStyles = getLocalStyles();
       saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
 
-      // 4. Try Firestore sync in background
+      // 4. Firestore sync - ROBUST FOR BOTH NEW AND PRELOADED STYLES
       try {
         const docToSave = { ...entryData };
         delete docToSave.id;
         docToSave.createdAt = serverTimestamp();
         const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), docToSave);
-        const styleUpdate = { [`stages.${stage}`]: increment(n), productionStarted: true };
-        await updateDoc(doc(db, 'styles', id), styleUpdate);
+
+        // Ensure parent style doc exists in Firestore with full fields, and increment stage atomically
+        const styleRef = doc(db, 'styles', id);
+        const styleSnap = await getDoc(styleRef);
+        if (!styleSnap.exists()) {
+          await setDoc(
+            styleRef,
+            {
+              ...(updatedStyle || {}),
+              id,
+              productionStarted: true,
+              stages: updatedStyle.stages,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } else {
+          await setDoc(
+            styleRef,
+            {
+              [`stages.${stage}`]: increment(n),
+              productionStarted: true,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
 
         if (entryData.yarnUsages?.length > 0) {
           const ledgerIds = [];
           for (const usage of entryData.yarnUsages) {
             try {
-              await updateDoc(doc(db, 'inventoryItems', usage.yarnItemId), {
-                currentStock: increment(-usage.yarnQty),
-              });
+              await setDoc(
+                doc(db, 'inventoryItems', usage.yarnItemId),
+                {
+                  currentStock: increment(-usage.yarnQty),
+                },
+                { merge: true }
+              );
               const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
                 type: 'consumption',
                 yarnItemId: usage.yarnItemId,
@@ -410,7 +484,7 @@ export default function StyleDetail() {
             }
           }
           if (ledgerIds.length > 0) {
-            await updateDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] });
+            await setDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] }, { merge: true });
           }
         }
       } catch (fbErr) {
@@ -456,32 +530,43 @@ export default function StyleDetail() {
 
     // 3. Update style stage counter if quantity changed
     if (diff !== 0) {
-      const currentTotal = Number(style?.stages?.[editingEntry.stage] || 0);
+      const currentTotal = Number(effectiveStyle?.stages?.[editingEntry.stage] || 0);
       const updatedStages = {
-        ...(style?.stages || {}),
+        ...(effectiveStyle?.stages || {}),
         [editingEntry.stage]: Math.max(0, currentTotal + diff),
       };
-      const updatedStyle = { ...style, stages: updatedStages };
+      const updatedStyle = { ...effectiveStyle, stages: updatedStages };
       setStyle(updatedStyle);
       const allStyles = getLocalStyles();
       saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
 
-      // 4. Try Firestore sync in background
+      // 4. Try Firestore sync in background using setDoc with merge
       try {
-        await updateDoc(doc(db, 'styles', id), {
-          [`stages.${editingEntry.stage}`]: increment(diff),
-        });
+        await setDoc(
+          doc(db, 'styles', id),
+          {
+            [`stages.${editingEntry.stage}`]: increment(diff),
+            productionStarted: true,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
       } catch (fbErr) {
         console.warn('Firestore stage update notice:', fbErr);
       }
     }
 
     try {
-      await updateDoc(doc(db, 'styles', id, 'productionEntries', editingEntry.id), {
-        quantity: newQty,
-        date: updated.date,
-        note: updated.note || '',
-      });
+      await setDoc(
+        doc(db, 'styles', id, 'productionEntries', editingEntry.id),
+        {
+          quantity: newQty,
+          date: updated.date,
+          note: updated.note || '',
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
     } catch (fbErr) {
       console.warn('Firestore edit entry notice:', fbErr);
     }
@@ -506,17 +591,24 @@ export default function StyleDetail() {
 
     // 3. Decrement style stage count
     const updatedStages = {
-      ...(style?.stages || {}),
-      [entry.stage]: Math.max(0, (style?.stages?.[entry.stage] || 0) - Number(entry.quantity || 0)),
+      ...(effectiveStyle?.stages || {}),
+      [entry.stage]: Math.max(0, (effectiveStyle?.stages?.[entry.stage] || 0) - Number(entry.quantity || 0)),
     };
-    const updatedStyle = { ...style, stages: updatedStages };
+    const updatedStyle = { ...effectiveStyle, stages: updatedStages };
     setStyle(updatedStyle);
     const allStyles = getLocalStyles();
     saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
 
-    // 4. Try Firestore delete in background
+    // 4. Try Firestore delete in background using setDoc with merge
     try {
-      await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
+      await setDoc(
+        doc(db, 'styles', id),
+        {
+          [`stages.${entry.stage}`]: increment(-entry.quantity),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
       const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
       for (const lid of ledgerIds) {
         try {
@@ -699,13 +791,14 @@ export default function StyleDetail() {
         </p>
         <div className="space-y-4">
           {STAGES.map((s, i) => {
-            const done = style.stages?.[s.key] || 0;
-            const pct = style.orderQty > 0 ? Math.min(100, Math.round((done / style.orderQty) * 100)) : 0;
-            const overQty = done - Number(style.orderQty || 0);
-            const overPct = style.orderQty > 0 && overQty > 0 ? Math.round((overQty / style.orderQty) * 100) : 0;
-            const prevKey = i > 0 ? effectivePrereqKey(style, s.key, i) : null;
-            const siblings = i > 0 ? siblingStagesSharingPrereq(style, prevKey, s.key) : [];
-            const wip = i > 0 ? Math.max(0, sharedPoolAvailable(style, s.key, i)) : null;
+            const done = effectiveStyle?.stages?.[s.key] || 0;
+            const targetQty = Number(effectiveStyle?.orderQty || style?.orderQty || 0);
+            const pct = targetQty > 0 ? Math.min(100, Math.round((done / targetQty) * 100)) : 0;
+            const overQty = done - targetQty;
+            const overPct = targetQty > 0 && overQty > 0 ? Math.round((overQty / targetQty) * 100) : 0;
+            const prevKey = i > 0 ? effectivePrereqKey(effectiveStyle, s.key, i) : null;
+            const siblings = i > 0 ? siblingStagesSharingPrereq(effectiveStyle, prevKey, s.key) : [];
+            const wip = i > 0 ? Math.max(0, sharedPoolAvailable(effectiveStyle, s.key, i)) : null;
             return (
               <div key={s.key}>
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 text-sm">
@@ -733,14 +826,14 @@ export default function StyleDetail() {
                         +{overPct}% {t('বেশি', 'over')}
                       </span>
                     )}
-                    <span>
-                      {done.toLocaleString('en-US')} / {Number(style.orderQty).toLocaleString('en-US')}
+                    <span className="font-medium text-ink">
+                      {done.toLocaleString('en-US')} / {targetQty.toLocaleString('en-US')}
                     </span>
                   </span>
                 </div>
                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
                   <div
-                    className={`h-full rounded-full ${overPct > 0 ? 'bg-red' : 'bg-indigo'}`}
+                    className={`h-full rounded-full transition-all duration-300 ${overPct > 0 ? 'bg-red' : 'bg-indigo'}`}
                     style={{ width: `${pct}%` }}
                   />
                 </div>

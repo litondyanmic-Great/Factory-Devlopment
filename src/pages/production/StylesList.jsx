@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, doc, setDoc, onSnapshot, orderBy, query, serverTimestamp } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { Plus, Search, Trash2, Pencil, ImageOff, Sparkles } from 'lucide-react';
 import { db } from '../../firebase';
@@ -28,11 +28,36 @@ export default function StylesList() {
       const q = query(collection(db, 'styles'), orderBy('createdAt', 'desc'));
       unsub = onSnapshot(
         q,
-        (snap) => {
-          // If Firestore is connected, always honor its list
-          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-          setStyles(list);
-          saveLocalStyles(list);
+        async (snap) => {
+          if (!snap.empty) {
+            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setStyles(list);
+            saveLocalStyles(list);
+
+            // Auto-seed any local styles that are not yet in Firestore so all devices have them
+            const existingIds = new Set(list.map((s) => s.id));
+            const local = getLocalStyles();
+            for (const s of local) {
+              if (s.id && !existingIds.has(s.id)) {
+                try {
+                  await setDoc(doc(db, 'styles', s.id), { ...s, createdAt: serverTimestamp() }, { merge: true });
+                } catch {}
+              }
+            }
+          } else {
+            // Firestore styles collection is empty: populate with default styles
+            const local = getLocalStyles();
+            if (local.length > 0) {
+              setStyles(local);
+              for (const s of local) {
+                try {
+                  await setDoc(doc(db, 'styles', s.id), { ...s, createdAt: serverTimestamp() }, { merge: true });
+                } catch {}
+              }
+            } else {
+              setStyles([]);
+            }
+          }
         },
         () => {
           setStyles(getLocalStyles());

@@ -7,6 +7,9 @@ import {
   addDoc,
   serverTimestamp,
   updateDoc,
+  setDoc,
+  increment,
+  getDoc,
   doc,
 } from 'firebase/firestore';
 import QRCode from 'qrcode';
@@ -213,6 +216,21 @@ export default function BundleTracking() {
   }
 
   useEffect(() => {
+    // Sync bundles from Firestore in realtime across devices
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(collection(db, 'bundles'), (snap) => {
+        if (!snap.empty) {
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setBundles(list);
+          saveStoredBundles(list);
+        }
+      });
+    } catch {}
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
     // Load styles
     try {
       const unsub = onSnapshot(collection(db, 'styles'), (snap) => {
@@ -370,6 +388,41 @@ export default function BundleTracking() {
     setBundles(updatedList);
     saveStoredBundles(updatedList);
     setScannedBundle(updatedBundle);
+
+    // Sync updated bundle to Firestore
+    try {
+      setDoc(doc(db, 'bundles', bundle.id), updatedBundle, { merge: true }).catch(() => {});
+    } catch {}
+
+    // When advancing a stage on a bundle, record this completed stage in the style's productionEntries
+    // and increment the style's stage counter in Firestore so stage-wise progress updates in realtime
+    if (bundle.styleId && bundle.currentStage && Number(bundle.qty) > 0) {
+      const stageDone = bundle.currentStage;
+      const q = Number(bundle.qty);
+      try {
+        const entryData = {
+          styleId: bundle.styleId,
+          stage: stageDone,
+          quantity: q,
+          date: new Date().toISOString().slice(0, 10),
+          enteredBy: operatorName || profile?.name || 'Bundle QR Scanner',
+          note: `Bundle: ${bundle.bundleNo} (${bundle.size || ''} ${bundle.color || ''})`,
+          createdAt: serverTimestamp(),
+        };
+        addDoc(collection(db, 'styles', bundle.styleId, 'productionEntries'), entryData).catch(() => {});
+        setDoc(
+          doc(db, 'styles', bundle.styleId),
+          {
+            [`stages.${stageDone}`]: increment(q),
+            productionStarted: true,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        ).catch(() => {});
+      } catch (err) {
+        console.warn('Bundle progress sync notice:', err);
+      }
+    }
 
     setScanMessage({
       text: isCompleted
