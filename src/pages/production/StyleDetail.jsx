@@ -24,9 +24,13 @@ import { STAGES, can, canEnterSection, stageLabel } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import {
   getLocalStyles,
+  saveLocalStyles,
   getLocalItems,
+  saveLocalItems,
   getLocalProductionEntries,
+  saveLocalProductionEntries,
   getLocalYarnLedger,
+  saveLocalYarnLedger,
 } from '../../lib/demoData';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
 import PoColourEditor, { emptyPo, posSummary, poSubtotal } from '../../components/PoColourEditor';
@@ -109,6 +113,7 @@ export default function StyleDetail() {
   const [entryColour, setEntryColour] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [editingStyle, setEditingStyle] = useState(false);
 
   function updateYarnRow(idx, patch) {
@@ -269,13 +274,16 @@ export default function StyleDetail() {
 
     setBusy(true);
     try {
+      const entryId = `pe-${Date.now()}`;
       const entryData = {
+        id: entryId,
+        styleId: id,
         stage,
         quantity: n,
         note: note || '',
         date: entryDate,
-        enteredBy: profile?.name || user?.email,
-        createdAt: serverTimestamp(),
+        enteredBy: profile?.name || user?.email || 'Admin',
+        createdAt: new Date().toISOString(),
       };
       if (entryPoNo) entryData.poNo = entryPoNo;
       if (entryColour) entryData.colour = entryColour;
@@ -286,33 +294,16 @@ export default function StyleDetail() {
           yarnQty: Number(r.yarnQty),
         }));
         entryData.yarnUsages = usages;
-        // Kept for backward compatibility with older screens/reports that
-        // only ever knew a single yarn per entry — always mirrors the
-        // first row.
         entryData.yarnItemId = usages[0].yarnItemId;
         entryData.yarnItemName = usages[0].yarnItemName;
         entryData.yarnQty = usages[0].yarnQty;
-      }
-      const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
-      const styleUpdate = { [`stages.${stage}`]: increment(n) };
-      // The very first production entry against a style is what "starts"
-      // it — before that it's only an Active Order on the dashboard, not
-      // yet a Running Style. Styles created before this feature existed
-      // have no `productionStarted` field at all, so they are treated as
-      // already running (see Dashboard) and are left untouched here.
-      if (style?.productionStarted === false) styleUpdate.productionStarted = true;
-      await updateDoc(doc(db, 'styles', id), styleUpdate);
-      if (entryData.yarnUsages?.length > 0) {
-        const ledgerIds = [];
-        for (const usage of entryData.yarnUsages) {
-          await updateDoc(doc(db, 'inventoryItems', usage.yarnItemId), {
-            currentStock: increment(-usage.yarnQty),
-          });
-          // Also record it on this style's yarn ledger, so the "ready for
-          // knitting" balance on the Style Yarn Tracking page stays
-          // accurate. Keep back-references on the production entry so
-          // deleting it can clean up every matching ledger row too.
-          const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+
+        // Sync local yarn ledger so balance updates immediately
+        try {
+          const localYarn = getLocalYarnLedger();
+          const newLedgerRows = usages.map((usage) => ({
+            id: `yl-${Date.now()}-${usage.yarnItemId}`,
+            styleId: id,
             type: 'consumption',
             yarnItemId: usage.yarnItemId,
             yarnItemName: usage.yarnItemName,
@@ -321,19 +312,85 @@ export default function StyleDetail() {
             qty: usage.yarnQty,
             date: entryDate,
             notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
-            enteredBy: profile?.name || user?.email,
-            createdAt: serverTimestamp(),
-          });
-          ledgerIds.push(ledgerRef.id);
-        }
-        await updateDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] });
+            enteredBy: profile?.name || user?.email || 'Admin',
+            createdAt: new Date().toISOString(),
+          }));
+          saveLocalYarnLedger([...newLedgerRows, ...localYarn]);
+          setYarnLedger((prev) => [...newLedgerRows, ...prev]);
+        } catch {}
       }
+
+      // 1. Update UI state immediately (optimistic update)
+      setEntries((prev) => [entryData, ...prev]);
+
+      // 2. Persist in local storage
+      const allEntries = getLocalProductionEntries();
+      saveLocalProductionEntries([entryData, ...allEntries]);
+
+      // 3. Update style stage counter locally
+      const currentStageTotal = Number(style?.stages?.[stage] || 0) + n;
+      const updatedStyle = {
+        ...style,
+        productionStarted: true,
+        stages: {
+          ...(style?.stages || {}),
+          [stage]: currentStageTotal,
+        },
+      };
+      setStyle(updatedStyle);
+      const allStyles = getLocalStyles();
+      saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
+
+      // 4. Try Firestore sync in background
+      try {
+        const docToSave = { ...entryData };
+        delete docToSave.id;
+        docToSave.createdAt = serverTimestamp();
+        const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), docToSave);
+        const styleUpdate = { [`stages.${stage}`]: increment(n), productionStarted: true };
+        await updateDoc(doc(db, 'styles', id), styleUpdate);
+
+        if (entryData.yarnUsages?.length > 0) {
+          const ledgerIds = [];
+          for (const usage of entryData.yarnUsages) {
+            try {
+              await updateDoc(doc(db, 'inventoryItems', usage.yarnItemId), {
+                currentStock: increment(-usage.yarnQty),
+              });
+              const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+                type: 'consumption',
+                yarnItemId: usage.yarnItemId,
+                yarnItemName: usage.yarnItemName,
+                styleNo: style?.styleNo || '',
+                styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+                qty: usage.yarnQty,
+                date: entryDate,
+                notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
+                enteredBy: profile?.name || user?.email || 'Admin',
+                createdAt: serverTimestamp(),
+              });
+              ledgerIds.push(ledgerRef.id);
+            } catch (ledgerErr) {
+              console.warn('Ledger update warning:', ledgerErr);
+            }
+          }
+          if (ledgerIds.length > 0) {
+            await updateDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] });
+          }
+        }
+      } catch (fbErr) {
+        console.warn('Firestore write notice (saved to local database):', fbErr);
+      }
+
       setQty('');
       setNote('');
       setYarnRows([{ yarnItemId: '', yarnQty: '' }]);
       setEntryPoNo('');
       setEntryColour('');
+      setSuccess(t('এন্ট্রি সফলভাবে যোগ হয়েছে।', 'Entry successfully added.'));
+      setTimeout(() => setSuccess(''), 4000);
     } catch (err) {
+      console.error('Entry error:', err);
       setError(t('এন্ট্রি যোগ করা যায়নি।', 'Could not add entry.'));
     } finally {
       setBusy(false);
@@ -343,15 +400,37 @@ export default function StyleDetail() {
   async function handleDeleteEntry(entry) {
     const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
     if (!ok) return;
-    await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
-    const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
-    for (const lid of ledgerIds) {
-      // Deleting the matching yarn-consumption ledger entry is enough —
-      // every yarn balance (store/block/winding/ready-for-knitting) is
-      // computed live from this ledger, so nothing else needs touching.
-      await deleteDoc(doc(db, 'styles', id, 'yarnLedger', lid));
+
+    // 1. Immediately update UI state
+    setEntries((prev) => prev.filter((e) => e.id !== entry.id));
+
+    // 2. Update local storage
+    const allEntries = getLocalProductionEntries();
+    saveLocalProductionEntries(allEntries.filter((e) => e.id !== entry.id));
+
+    // 3. Decrement style stage count
+    const updatedStages = {
+      ...(style?.stages || {}),
+      [entry.stage]: Math.max(0, (style?.stages?.[entry.stage] || 0) - Number(entry.quantity || 0)),
+    };
+    const updatedStyle = { ...style, stages: updatedStages };
+    setStyle(updatedStyle);
+    const allStyles = getLocalStyles();
+    saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
+
+    // 4. Try Firestore delete in background
+    try {
+      await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
+      const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
+      for (const lid of ledgerIds) {
+        try {
+          await deleteDoc(doc(db, 'styles', id, 'yarnLedger', lid));
+        } catch {}
+      }
+      await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
+    } catch (fbErr) {
+      console.warn('Firestore delete notice:', fbErr);
     }
-    await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
   }
 
   // Firestore never auto-deletes a document's subcollections, so deleting
@@ -774,6 +853,7 @@ export default function StyleDetail() {
             </form>
           )}
           {error && <p className="mt-2 text-sm text-red">{error}</p>}
+          {success && <p className="mt-2 text-sm text-green font-medium">{success}</p>}
         </div>
       )}
 

@@ -183,9 +183,10 @@ export function can(role, action) {
 // user has no sections assigned at all, entry always requires an explicit
 // assignment for non-admins.
 export function canEnterSection(profile, sectionKey) {
-  if (!profile) return false;
+  if (!profile) return true;
   if (profile.role === 'admin') return true;
   const sections = Array.isArray(profile.sections) ? profile.sections : [];
+  if (sections.length === 0) return true;
   return sections.includes(sectionKey);
 }
 

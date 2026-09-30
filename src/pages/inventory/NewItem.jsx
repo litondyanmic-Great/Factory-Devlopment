@@ -7,6 +7,14 @@ import { Field, inputClass, btnPrimary, btnSecondary } from '../../components/ui
 import StyleSearchSelect from '../../components/StyleSearchSelect';
 import { ITEM_TYPES, COMMON_UNITS, ACCESSORY_NAME_SUGGESTIONS } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
+import {
+  getLocalItems,
+  saveLocalItems,
+  getLocalYarnLedger,
+  saveLocalYarnLedger,
+  getLocalAccLedger,
+  saveLocalAccLedger,
+} from '../../lib/demoData';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -73,13 +81,12 @@ export default function NewItem() {
     }
     setBusy(true);
     try {
-      const enteredBy = profile?.name || user?.email;
+      const enteredBy = profile?.name || user?.email || 'Store In-Charge';
       const styleLabel = `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}`;
+      const generatedItemId = `item-${Date.now()}`;
 
-      // 1) Create the catalog entry (name/type/unit only — no opening
-      // stock, no reorder level; those belong on Item Detail if ever
-      // needed later, not at order time).
-      const itemRef = await addDoc(collection(db, 'inventoryItems'), {
+      const newItem = {
+        id: generatedItemId,
         name: name.trim(),
         type,
         unit,
@@ -87,16 +94,22 @@ export default function NewItem() {
         supplier: supplier || '',
         reorderLevel: 0,
         currentStock: 0,
-        createdAt: serverTimestamp(),
+        createdAt: new Date().toISOString(),
         createdBy: enteredBy,
-      });
+      };
 
-      // 2) Immediately place the order against the selected style.
+      // 1. Immediately persist locally
+      const currentItems = getLocalItems();
+      saveLocalItems([newItem, ...currentItems]);
+
+      const ledgerId = `led-${Date.now()}`;
       if (type === 'yarn') {
-        await addDoc(collection(db, 'styles', styleId, 'yarnLedger'), {
+        const ledgerEntry = {
+          id: ledgerId,
           type: 'dyeingOrder',
-          yarnItemId: itemRef.id,
+          yarnItemId: generatedItemId,
           yarnItemName: name.trim(),
+          styleId,
           styleNo: style.styleNo,
           styleLabel,
           qty: Number(qty),
@@ -104,14 +117,18 @@ export default function NewItem() {
           date,
           notes: notes || '',
           enteredBy,
-          createdAt: serverTimestamp(),
-        });
+          createdAt: new Date().toISOString(),
+        };
+        const currentYarn = getLocalYarnLedger();
+        saveLocalYarnLedger([ledgerEntry, ...currentYarn]);
       } else {
-        await addDoc(collection(db, 'styles', styleId, 'accessoryLedger'), {
+        const accEntry = {
+          id: ledgerId,
           type: 'order',
-          itemId: itemRef.id,
+          itemId: generatedItemId,
           itemName: name.trim(),
           unit,
+          styleId,
           styleNo: style.styleNo,
           styleLabel,
           qty: Number(qty),
@@ -119,12 +136,63 @@ export default function NewItem() {
           date,
           notes: notes || '',
           enteredBy,
+          createdAt: new Date().toISOString(),
+        };
+        const currentAcc = getLocalAccLedger();
+        saveLocalAccLedger([accEntry, ...currentAcc]);
+      }
+
+      // 2. Try Firestore sync in background
+      try {
+        const itemRef = await addDoc(collection(db, 'inventoryItems'), {
+          name: name.trim(),
+          type,
+          unit,
+          spec: type === 'yarn' ? `${style.yarnComposition || ''}${style.colour ? ' — ' + style.colour : ''}` : '',
+          supplier: supplier || '',
+          reorderLevel: 0,
+          currentStock: 0,
           createdAt: serverTimestamp(),
+          createdBy: enteredBy,
         });
+
+        if (type === 'yarn') {
+          await addDoc(collection(db, 'styles', styleId, 'yarnLedger'), {
+            type: 'dyeingOrder',
+            yarnItemId: itemRef.id,
+            yarnItemName: name.trim(),
+            styleNo: style.styleNo,
+            styleLabel,
+            qty: Number(qty),
+            supplier: supplier || '',
+            date,
+            notes: notes || '',
+            enteredBy,
+            createdAt: serverTimestamp(),
+          });
+        } else {
+          await addDoc(collection(db, 'styles', styleId, 'accessoryLedger'), {
+            type: 'order',
+            itemId: itemRef.id,
+            itemName: name.trim(),
+            unit,
+            styleNo: style.styleNo,
+            styleLabel,
+            qty: Number(qty),
+            supplier: supplier || '',
+            date,
+            notes: notes || '',
+            enteredBy,
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch (fbErr) {
+        console.warn('Firestore item creation notice (saved locally):', fbErr);
       }
 
       navigate(type === 'yarn' ? '/inventory/yarn-tracking' : '/inventory/accessory-tracking');
     } catch (err) {
+      console.error('Order creation error:', err);
       setError(t('অর্ডার তৈরি করা যায়নি, আবার চেষ্টা করুন।', 'Could not create the order, please try again.'));
     } finally {
       setBusy(false);

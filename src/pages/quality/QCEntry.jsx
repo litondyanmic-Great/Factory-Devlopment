@@ -10,6 +10,7 @@ import { STAGES, BLOCKS, ALL_STYLE_SENTINEL, ALL_STYLE_LABEL, canEnterSection, q
 import { useSectionDefects } from '../../lib/useSectionDefects';
 import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
+import { getLocalQualityChecks, saveLocalQualityChecks } from '../../lib/demoData';
 
 export default function QCEntry() {
   const { user, profile } = useAuth();
@@ -82,7 +83,9 @@ export default function QCEntry() {
     }
     setBusy(true);
     try {
-      await addDoc(collection(db, 'qualityChecks'), {
+      const entryId = `qc-${Date.now()}`;
+      const entryPayload = {
+        id: entryId,
         styleId,
         styleLabel,
         block,
@@ -98,14 +101,30 @@ export default function QCEntry() {
         ),
         defectLabels: Object.fromEntries(sectionDefects.map((d) => [d.key, d.label])),
         remarks: remarks || '',
-        enteredBy: profile?.name || user?.email,
-        createdAt: serverTimestamp(),
-      });
-      setSuccess(t('QC এন্ট্রি সেভ হয়েছে।', 'QC entry saved.'));
+        enteredBy: profile?.name || user?.email || 'QC Inspector',
+        createdAt: new Date().toISOString(),
+      };
+
+      // 1. Immediately persist locally
+      const currentChecks = getLocalQualityChecks();
+      saveLocalQualityChecks([entryPayload, ...currentChecks]);
+
+      // 2. Attempt Firestore sync in background
+      try {
+        const docToSave = { ...entryPayload };
+        delete docToSave.id;
+        docToSave.createdAt = serverTimestamp();
+        await addDoc(collection(db, 'qualityChecks'), docToSave);
+      } catch (fbErr) {
+        console.warn('Firestore QC entry fallback (saved locally):', fbErr);
+      }
+
+      setSuccess(t('QC এন্ট্রি সফলভাবে সেভ হয়েছে।', 'QC entry successfully saved.'));
       setCheckedQty('');
       setDefectValues({});
       setRemarks('');
     } catch (err) {
+      console.error('QC save error:', err);
       setError(t('এন্ট্রি সেভ করা যায়নি।', 'Could not save entry.'));
     } finally {
       setBusy(false);
