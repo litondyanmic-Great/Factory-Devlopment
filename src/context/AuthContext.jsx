@@ -104,32 +104,25 @@ export function AuthProvider({ children }) {
   }, []);
 
   async function login(email, password) {
-    const currentAdmin = getStoredAdminConfig();
     const cleanEmail = (email || '').trim().toLowerCase();
-    const cleanAdminEmail = (currentAdmin.email || '').trim().toLowerCase();
 
-    // 1. Check default / saved admin credentials
-    if (cleanEmail === cleanAdminEmail && password === currentAdmin.password) {
-      const adminUser = {
-        uid: currentAdmin.uid,
-        email: currentAdmin.email,
-        displayName: currentAdmin.name,
-      };
-      const adminProfile = {
-        ...currentAdmin,
-      };
-      setUser(adminUser);
-      setProfile(adminProfile);
-      localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: adminUser, profile: adminProfile }));
-      return adminProfile;
-    }
-
-    // 2. Try Firebase Auth
+    // Authenticate directly with Firebase Auth so a valid auth token is issued
     try {
-      const cred = await signInWithEmailAndPassword(auth, email, password);
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
       return cred.user;
     } catch (err) {
-      // If Firebase failed and wasn't matching local admin, throw error
+      // If user doesn't exist yet and credentials match initial admin, bootstrap it in Firebase Auth
+      if (
+        (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') &&
+        cleanEmail === 'admin@factoryerp.com' &&
+        password === 'admin123'
+      ) {
+        try {
+          return await signup('Factory Admin', cleanEmail, password);
+        } catch (signupErr) {
+          console.warn('Auto-signup notice:', signupErr);
+        }
+      }
       throw err;
     }
   }
