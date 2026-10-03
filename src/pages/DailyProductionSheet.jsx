@@ -54,7 +54,11 @@ export default function DailyProductionSheet() {
         query(collectionGroup(db, 'productionEntries')),
         (snap) => {
           if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ styleId: d.ref.parent.parent.id, ...d.data() }));
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              styleId: d.data().styleId || d.ref.parent?.parent?.id,
+              ...d.data(),
+            }));
             setEntries(list);
             saveLocalProductionEntries(list);
           }
@@ -91,6 +95,14 @@ export default function DailyProductionSheet() {
           if (e.date === date) stageData[e.stage].today += q;
           if (e.date <= date) stageData[e.stage].total += q;
         });
+
+      // Seamless fallback: If style has stages counters from before date entries, ensure stageData reflects it
+      STAGES.forEach((s) => {
+        if (stageData[s.key].total === 0 && (style.stages?.[s.key] || 0) > 0) {
+          stageData[s.key].total = Number(style.stages[s.key] || 0);
+        }
+      });
+
       return { style, stageData };
     });
   }, [visibleStyles, entries, date]);

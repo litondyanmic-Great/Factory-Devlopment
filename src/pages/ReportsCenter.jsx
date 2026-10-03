@@ -98,7 +98,11 @@ export default function ReportsCenter() {
         query(collectionGroup(db, 'productionEntries')),
         (snap) => {
           if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() }));
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              styleId: d.data().styleId || d.ref.parent?.parent?.id,
+              ...d.data(),
+            }));
             setProdEntries(list);
             saveLocalProductionEntries(list);
           }
@@ -116,7 +120,11 @@ export default function ReportsCenter() {
         query(collectionGroup(db, 'yarnLedger')),
         (snap) => {
           if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() }));
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              styleId: d.data().styleId || d.ref.parent?.parent?.id,
+              ...d.data(),
+            }));
             setYarnLedger(list);
             saveLocalYarnLedger(list);
           }
@@ -134,7 +142,11 @@ export default function ReportsCenter() {
         query(collectionGroup(db, 'accessoryLedger')),
         (snap) => {
           if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() }));
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              styleId: d.data().styleId || d.ref.parent?.parent?.id,
+              ...d.data(),
+            }));
             setAccLedger(list);
             saveLocalAccLedger(list);
           }

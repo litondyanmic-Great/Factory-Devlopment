@@ -56,7 +56,11 @@ export default function Dashboard() {
         query(collectionGroup(db, 'productionEntries')),
         (snap) => {
           if (!snap.empty) {
-            const list = snap.docs.map((d) => d.data());
+            const list = snap.docs.map((d) => ({
+              id: d.id,
+              styleId: d.data().styleId || d.ref.parent?.parent?.id,
+              ...d.data(),
+            }));
             setEntries(list);
             saveLocalProductionEntries(list);
           }
