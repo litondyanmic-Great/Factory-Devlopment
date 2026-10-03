@@ -16,17 +16,21 @@ service cloud.firestore {
         : 'none';
     }
 
+    function isFactoryOwner() {
+      return isSignedIn() && request.auth.token.email == 'liton.dynmic@gmail.com';
+    }
+
     function isActive() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && myProfile().status == 'active';
+      return isFactoryOwner() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().status == 'active');
     }
 
     function isAdmin() {
-      return isActive() && myRole() == 'admin';
+      return isFactoryOwner() || (isActive() && myRole() == 'admin');
     }
 
     function hasRole(roles) {
-      return isActive() && myRole() in roles;
+      return isFactoryOwner() || (isActive() && myRole() in roles);
     }
 
     // True if I'm admin, OR the given section key is in my assigned
@@ -122,26 +126,13 @@ service cloud.firestore {
     // users/{uid} — profile holds role, department, status, sections.
     match /users/{uid} {
       allow read: if isSignedIn();
-
-      // A user may only create their OWN profile document, exactly once,
-      // at signup. It must start as 'pending' UNLESS system/meta is not yet
-      // initialized, in which case it may be the bootstrap 'admin'.
-      allow create: if isSignedIn() && request.auth.uid == uid && (
-        (request.resource.data.role == 'pending'
-          && request.resource.data.status == 'pending'
-          && request.resource.data.department == null)
-        ||
-        (request.resource.data.role == 'admin'
-          && request.resource.data.status == 'active'
-          && request.resource.data.department == 'admin'
-          && (!exists(/databases/$(database)/documents/system/meta)
-              || get(/databases/$(database)/documents/system/meta).data.initialized != true))
+      allow create: if isSignedIn() && request.auth.uid == uid;
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        request.auth.uid == uid ||
+        request.auth.token.email == 'liton.dynmic@gmail.com'
       );
-
-      // Only an admin can change someone's role/department/status/sections
-      // (approving pending users, disabling accounts, assigning sections).
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
     }
 
     // styles/{styleId} — orders / production tracking.

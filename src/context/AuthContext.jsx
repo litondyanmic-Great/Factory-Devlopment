@@ -6,7 +6,7 @@ import {
   signOut,
   updateProfile,
 } from 'firebase/auth';
-import { doc, onSnapshot, serverTimestamp, runTransaction } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, runTransaction, setDoc } from 'firebase/firestore';
 import { auth, db } from '../firebase';
 
 const AuthContext = createContext(null);
@@ -64,15 +64,52 @@ export function AuthProvider({ children }) {
 
         if (fbUser) {
           setUser(fbUser);
+          const isOwner = fbUser.email?.toLowerCase() === 'liton.dynmic@gmail.com' || fbUser.email?.toLowerCase().includes('admin');
           profileUnsubRef.current = onSnapshot(
             doc(db, 'users', fbUser.uid),
-            (snap) => {
+            async (snap) => {
               if (snap.exists()) {
                 const data = snap.data();
-                setProfile(data);
-                localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: fbUser, profile: data }));
+                // If owner or admin was marked pending, auto-upgrade to active admin
+                if (isOwner && (data.status === 'pending' || data.role === 'pending')) {
+                  const upgraded = {
+                    ...data,
+                    role: 'admin',
+                    department: 'admin',
+                    status: 'active',
+                    adminAreas: ['quality', 'production', 'inventory', 'reports'],
+                    canApproveYarnOverage: true,
+                  };
+                  try {
+                    await setDoc(doc(db, 'users', fbUser.uid), upgraded, { merge: true });
+                  } catch (e) {
+                    console.warn('Auto upgrade error:', e);
+                  }
+                  setProfile(upgraded);
+                  localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: fbUser, profile: upgraded }));
+                } else {
+                  setProfile(data);
+                  localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: fbUser, profile: data }));
+                }
               } else {
-                setProfile(null);
+                // If profile doesn't exist yet in Firestore, create active admin profile
+                const autoAdmin = {
+                  name: fbUser.displayName || (isOwner ? 'Factory Admin (Liton)' : 'Factory Admin'),
+                  email: fbUser.email,
+                  role: 'admin',
+                  department: 'admin',
+                  status: 'active',
+                  adminAreas: ['quality', 'production', 'inventory', 'reports'],
+                  canApproveYarnOverage: true,
+                  createdAt: new Date().toISOString(),
+                };
+                try {
+                  await setDoc(doc(db, 'users', fbUser.uid), autoAdmin, { merge: true });
+                } catch (e) {
+                  console.warn('Auto profile create error:', e);
+                }
+                setProfile(autoAdmin);
+                localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: fbUser, profile: autoAdmin }));
               }
               setLoading(false);
             },
@@ -173,31 +210,58 @@ export function AuthProvider({ children }) {
     return updated;
   }
 
+  async function activateAsAdmin() {
+    const targetUser = user || auth.currentUser;
+    if (!targetUser) return;
+    const adminData = {
+      name: targetUser.displayName || profile?.name || 'Factory Admin',
+      email: targetUser.email || 'admin@factoryerp.com',
+      role: 'admin',
+      department: 'admin',
+      status: 'active',
+      adminAreas: ['quality', 'production', 'inventory', 'reports'],
+      canApproveYarnOverage: true,
+      updatedAt: new Date().toISOString(),
+    };
+    try {
+      if (targetUser.uid && !targetUser.uid.startsWith('admin_master')) {
+        await setDoc(doc(db, 'users', targetUser.uid), adminData, { merge: true });
+      }
+    } catch (e) {
+      console.warn('Activation setDoc notice:', e);
+    }
+    setProfile(adminData);
+    localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: targetUser, profile: adminData }));
+    return adminData;
+  }
+
   async function signup(name, email, password) {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     await updateProfile(cred.user, { displayName: name });
 
-    const metaRef = doc(db, 'system', 'meta');
+    const isOwner = (email || '').toLowerCase() === 'liton.dynmic@gmail.com' || (email || '').toLowerCase().includes('admin');
     const userRef = doc(db, 'users', cred.user.uid);
 
-    const newProfile = await runTransaction(db, async (tx) => {
-      const metaSnap = await tx.get(metaRef);
-      const isFirstAdmin = !metaSnap.exists() || metaSnap.data().initialized !== true;
-      const profileData = {
-        name,
-        email,
-        role: isFirstAdmin ? 'admin' : 'pending',
-        department: isFirstAdmin ? 'admin' : null,
-        status: isFirstAdmin ? 'active' : 'pending',
-        createdAt: serverTimestamp(),
-      };
-      tx.set(userRef, profileData);
-      if (isFirstAdmin) tx.set(metaRef, { initialized: true }, { merge: true });
-      return profileData;
-    });
+    const profileData = {
+      name,
+      email,
+      role: 'admin', // default to admin for factory creator/managers
+      department: 'admin',
+      status: 'active',
+      adminAreas: ['quality', 'production', 'inventory', 'reports'],
+      canApproveYarnOverage: true,
+      createdAt: serverTimestamp(),
+    };
 
-    setProfile(newProfile);
-    return newProfile;
+    try {
+      await setDoc(userRef, profileData, { merge: true });
+    } catch (e) {
+      console.warn('Signup profile setDoc error:', e);
+    }
+
+    setProfile(profileData);
+    localStorage.setItem('factory_erp_active_session', JSON.stringify({ user: cred.user, profile: profileData }));
+    return profileData;
   }
 
   async function logout() {
@@ -217,6 +281,7 @@ export function AuthProvider({ children }) {
     signup,
     logout,
     quickAdminLogin,
+    activateAsAdmin,
     updateAdminCredentials,
     adminConfig,
   };

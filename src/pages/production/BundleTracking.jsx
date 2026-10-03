@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Tag,
   Trash2,
+  FileText,
 } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
@@ -432,6 +433,50 @@ export default function BundleTracking() {
     });
   }
 
+  function handlePrintNow() {
+    const printable = document.querySelector('.bundle-cards-grid');
+    if (!printable) {
+      window.print();
+      return;
+    }
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>Bundle QR Tickets Print</title>
+            <style>
+              @page { size: A4 portrait; margin: 8mm; }
+              * { box-sizing: border-box; }
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; background: #fff; color: #111; }
+              .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+              .card { border: 2px dashed #444; border-radius: 8px; padding: 12px; background: #fff; page-break-inside: avoid; break-inside: avoid; }
+              .no-print { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+              @media print { .no-print { display: none !important; } }
+            </style>
+          </head>
+          <body>
+            <div class="no-print">
+              <h3 style="margin: 0; font-size: 16px;">Sweater Factory — Bundle Tickets</h3>
+              <button onclick="window.print()" style="padding: 8px 20px; background: #1B2C46; color: #fff; border: 0; border-radius: 6px; font-weight: bold; cursor: pointer;">🖨️ Print Now</button>
+            </div>
+            <div class="grid">${printable.innerHTML}</div>
+            <script>
+              window.onload = function() {
+                setTimeout(function() { window.print(); }, 250);
+              };
+            </script>
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    } else {
+      window.print();
+    }
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-16">
       {/* Header */}
@@ -663,7 +708,7 @@ export default function BundleTracking() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={handlePrintNow}
                 className={`${btnPrimary} flex items-center gap-1.5 !text-xs`}
               >
                 <Printer size={15} />

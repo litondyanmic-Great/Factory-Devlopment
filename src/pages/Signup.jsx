@@ -42,8 +42,8 @@ export default function Signup() {
           <h1 className="font-display text-xl font-semibold text-ink">{t('নতুন অ্যাকাউন্ট', 'New Account')}</h1>
           <p className="mt-1 text-sm text-ink-soft">
             {t(
-              'প্রথম অ্যাকাউন্টটি নিজে থেকেই অ্যাডমিন হয়ে যাবে। এরপর প্রতিটি নতুন অ্যাকাউন্ট অ্যাডমিনের অনুমোদনের অপেক্ষায় থাকবে।',
-              'The very first account automatically becomes admin. Every account after that waits for admin approval.'
+              'নতুন অ্যাকাউন্ট তৈরি করে সরাসরি ফ্যাক্টরি ম্যানেজমেন্ট ড্যাশবোর্ডে প্রবেশ করুন।',
+              'Create your account to directly access the Factory Management Dashboard.'
             )}
           </p>
         </div>

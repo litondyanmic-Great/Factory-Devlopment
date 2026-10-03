@@ -53,7 +53,7 @@ export default function Login() {
           <p className="mt-1 text-sm text-ink-soft">{t('সোয়েটার ফ্যাক্টরি ম্যানেজমেন্ট সিস্টেম', 'Sweater Factory Management System')}</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-line bg-surface p-6 shadow-sm">
+        <form onSubmit={handleSubmit} className="space-y-4 rounded-xl border border-line bg-surface p-6 shadow-sm">
           <Field label={t('ইমেইল', 'Email')}>
             <input
               type="email"
@@ -75,7 +75,7 @@ export default function Login() {
             />
           </Field>
           {error && <p className="text-sm text-red">{error}</p>}
-          <button type="submit" disabled={busy} className={`${btnPrimary} w-full`}>
+          <button type="submit" disabled={busy} className={`${btnPrimary} w-full py-2.5`}>
             {busy ? t('লগইন হচ্ছে…', 'Logging in…') : t('লগইন করুন', 'Log In')}
           </button>
         </form>
