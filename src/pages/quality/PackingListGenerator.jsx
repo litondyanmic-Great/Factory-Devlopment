@@ -21,60 +21,29 @@ import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
-import { getLocalPackingLists, saveLocalPackingLists, deleteLocalPackingList } from '../../lib/demoData';
+import { getLocalPackingLists, saveLocalPackingLists, deleteLocalPackingList, getLocalStyles } from '../../lib/demoData';
 
-const DEFAULT_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+const DEFAULT_SIZES = ['S', 'M', 'L', 'XL', 'XXL'];
 
-const INITIAL_PACKING_LIST = {
-  id: 'demo-pack-01',
-  styleNo: 'HM-2026/SW-01',
-  styleName: "Men's Crew Neck Pullover",
-  buyer: 'H&M Hennes & Mauritz GBC AB',
-  poNo: 'PO-994821',
-  invoiceNo: 'INV-2026-EXP-088',
-  destination: 'Hamburg Port, Germany',
-  countryOfOrigin: 'Bangladesh',
-  cartonLengthCm: 60,
-  cartonWidthCm: 40,
-  cartonHeightCm: 30,
-  cartonNetWeightKg: 12.0,
-  cartonGrossWeightKg: 13.5,
-  sizes: DEFAULT_SIZES,
-  rows: [
-    {
-      id: 1,
-      ctnFrom: 1,
-      ctnTo: 20,
-      color: 'Navy Blue',
-      sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 },
-      pcsPerCtn: 30,
-    },
-    {
-      id: 2,
-      ctnFrom: 21,
-      ctnTo: 45,
-      color: 'Navy Blue',
-      sizeRatios: { XS: 0, S: 6, M: 12, L: 8, XL: 4, XXL: 0 },
-      pcsPerCtn: 30,
-    },
-    {
-      id: 3,
-      ctnFrom: 46,
-      ctnTo: 70,
-      color: 'Heather Grey',
-      sizeRatios: { XS: 4, S: 8, M: 10, L: 6, XL: 2, XXL: 0 },
-      pcsPerCtn: 30,
-    },
-    {
-      id: 4,
-      ctnFrom: 71,
-      ctnTo: 90,
-      color: 'Heather Grey',
-      sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 },
-      pcsPerCtn: 30,
-    },
-  ],
-};
+function createBlankPackingList() {
+  return {
+    id: `pack-${Date.now()}`,
+    styleNo: '',
+    styleName: '',
+    buyer: '',
+    poNo: '',
+    invoiceNo: '',
+    destination: '',
+    countryOfOrigin: 'Bangladesh',
+    cartonLengthCm: 60,
+    cartonWidthCm: 40,
+    cartonHeightCm: 30,
+    cartonNetWeightKg: '',
+    cartonGrossWeightKg: '',
+    sizes: DEFAULT_SIZES,
+    rows: [],
+  };
+}
 
 function getSizeValue(row, sz) {
   if (row.sizeRatios && row.sizeRatios[sz] !== undefined) {
@@ -93,10 +62,11 @@ export default function PackingListGenerator() {
 
   const [savedLists, setSavedLists] = useState(getLocalPackingLists);
   const [activeTab, setActiveTab] = useState(() => (getLocalPackingLists().length > 0 ? 'list' : 'editor')); // 'list' | 'editor'
+  const [stylesList, setStylesList] = useState(getLocalStyles);
 
   const [docData, setDocData] = useState(() => {
     const list = getLocalPackingLists();
-    return list.length > 0 ? list[0] : INITIAL_PACKING_LIST;
+    return list.length > 0 ? list[0] : createBlankPackingList();
   });
 
   const [isPrintView, setIsPrintView] = useState(false);
@@ -106,6 +76,20 @@ export default function PackingListGenerator() {
   const [packingListToDelete, setPackingListToDelete] = useState(null);
   const [toastNotice, setToastNotice] = useState('');
 
+  // Sync with Firestore styles
+  useEffect(() => {
+    let unsub = () => {};
+    try {
+      unsub = onSnapshot(collection(db, 'styles'), (snap) => {
+        if (!snap.empty) {
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setStylesList(list);
+        }
+      });
+    } catch {}
+    return () => unsub();
+  }, []);
+
   // Sync with Firestore collection 'packingLists' when available
   useEffect(() => {
     try {
@@ -114,10 +98,15 @@ export default function PackingListGenerator() {
         q,
         (snapshot) => {
           if (!snapshot.empty) {
-            const list = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+            const list = snapshot.docs
+              .map((d) => ({ id: d.id, ...d.data() }))
+              .filter((p) => p.id !== 'pack-hm-01' && p.id !== 'pack-zr-02' && p.id !== 'demo-pack-01');
             list.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
             setSavedLists(list);
             saveLocalPackingLists(list);
+          } else {
+            setSavedLists([]);
+            saveLocalPackingLists([]);
           }
         },
         (err) => {
@@ -196,14 +185,12 @@ export default function PackingListGenerator() {
   function handleAddRow() {
     const lastRow = docData.rows[docData.rows.length - 1];
     const nextFrom = lastRow ? Number(lastRow.ctnTo) + 1 : 1;
-    const nextTo = nextFrom + 19;
+    const nextTo = nextFrom + 9;
 
     const initialRatios = {};
     activeSizes.forEach((sz) => {
-      initialRatios[sz] = lastRow ? getSizeValue(lastRow, sz) : 5;
+      initialRatios[sz] = 0;
     });
-
-    const totalPerCtn = Object.values(initialRatios).reduce((s, v) => s + Number(v || 0), 0);
 
     setDocData((prev) => ({
       ...prev,
@@ -213,16 +200,15 @@ export default function PackingListGenerator() {
           id: Date.now(),
           ctnFrom: nextFrom,
           ctnTo: nextTo,
-          color: lastRow ? lastRow.color : 'Navy Blue',
+          color: lastRow?.color || '',
           sizeRatios: initialRatios,
-          pcsPerCtn: totalPerCtn,
+          pcsPerCtn: 0,
         },
       ],
     }));
   }
 
   function handleRemoveRow(id) {
-    if (docData.rows.length <= 1) return;
     setDocData((prev) => ({
       ...prev,
       rows: prev.rows.filter((r) => r.id !== id),
@@ -389,33 +375,7 @@ export default function PackingListGenerator() {
   }
 
   function handleResetNewList() {
-    const blank = {
-      id: `pack-${Date.now()}`,
-      styleNo: '',
-      styleName: '',
-      buyer: '',
-      poNo: '',
-      invoiceNo: '',
-      destination: '',
-      countryOfOrigin: 'Bangladesh',
-      cartonLengthCm: 60,
-      cartonWidthCm: 40,
-      cartonHeightCm: 30,
-      cartonNetWeightKg: 12.0,
-      cartonGrossWeightKg: 13.5,
-      sizes: DEFAULT_SIZES,
-      rows: [
-        {
-          id: 1,
-          ctnFrom: 1,
-          ctnTo: 20,
-          color: 'Solid Color',
-          sizeRatios: { XS: 2, S: 4, M: 8, L: 8, XL: 4, XXL: 2 },
-          pcsPerCtn: 28,
-        },
-      ],
-    };
-    setDocData(blank);
+    setDocData(createBlankPackingList());
     setActiveTab('editor');
   }
 
@@ -989,7 +949,35 @@ export default function PackingListGenerator() {
           </div>
 
           {/* Shipment & PO Details Grid */}
-          <div className="rounded-lg border border-line bg-surface p-4">
+          <div className="rounded-lg border border-line bg-surface p-4 space-y-3">
+            {stylesList && stylesList.length > 0 && (
+              <Field label={t('বিদ্যমান স্টাইল থেকে তথ্য পূরণ করুন (ঐচ্ছিক)', 'Quick-fill from Factory Style (Optional)')}>
+                <select
+                  className={inputClass}
+                  defaultValue=""
+                  onChange={(e) => {
+                    const s = stylesList.find((st) => st.id === e.target.value);
+                    if (s) {
+                      setDocData((prev) => ({
+                        ...prev,
+                        styleNo: s.styleNo || '',
+                        styleName: s.styleName || '',
+                        buyer: s.buyer || '',
+                        poNo: s.poNo || prev.poNo || '',
+                      }));
+                    }
+                  }}
+                >
+                  <option value="">{t('— স্টাইল নির্বাচন করুন (বা নিজে লিখুন) —', '— Select a Style to auto-fill (or type manually below) —')}</option>
+                  {stylesList.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.styleNo} {st.styleName ? `— ${st.styleName}` : ''} ({st.buyer || 'No Buyer'})
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <Field label={t('বায়ারের নাম (Buyer)', 'Buyer Name')}>
                 <input
@@ -1005,6 +993,14 @@ export default function PackingListGenerator() {
                   className={inputClass}
                   value={docData.styleNo}
                   onChange={(e) => setDocData((d) => ({ ...d, styleNo: e.target.value }))}
+                />
+              </Field>
+              <Field label={t('স্টাইল নাম (Style Name)', 'Style Name')}>
+                <input
+                  type="text"
+                  className={inputClass}
+                  value={docData.styleName}
+                  onChange={(e) => setDocData((d) => ({ ...d, styleName: e.target.value }))}
                 />
               </Field>
               <Field label={t('পিও নম্বর (PO No)', 'PO No')}>
@@ -1166,7 +1162,23 @@ export default function PackingListGenerator() {
                   </tr>
                 </thead>
                 <tbody>
-                  {docData.rows.map((row) => {
+                  {docData.rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={activeSizes.length + 5} className="py-10 text-center text-xs text-ink-soft">
+                        <p className="font-semibold text-ink text-sm">{t('কোনো কার্টুন রেঞ্জ এখনো যোগ করা হয়নি', 'No carton ranges added yet')}</p>
+                        <p className="mt-1 text-ink-soft">{t('কার্টুন নম্বর, কালার ও সাইজ রেশিও ব্রেকডাউন দিতে নিচে ক্লিক করুন।', 'Click below to add a carton range with colors and size ratios.')}</p>
+                        <button
+                          type="button"
+                          onClick={handleAddRow}
+                          className={`${btnPrimary} !text-xs mt-3 inline-flex items-center gap-1.5 cursor-pointer`}
+                        >
+                          <Plus size={14} />
+                          {t('প্রথম কার্টুন রেঞ্জ যোগ করুন', 'Add First Carton Range')}
+                        </button>
+                      </td>
+                    </tr>
+                  ) : (
+                    docData.rows.map((row) => {
                     const ctns = Math.max(0, Number(row.ctnTo) - Number(row.ctnFrom) + 1);
                     const totalPcs = ctns * Number(row.pcsPerCtn || 0);
 
@@ -1222,15 +1234,16 @@ export default function PackingListGenerator() {
                           <button
                             type="button"
                             onClick={() => handleRemoveRow(row.id)}
-                            disabled={docData.rows.length <= 1}
-                            className="text-ink-soft/40 hover:text-red disabled:opacity-20 cursor-pointer"
+                            className="text-ink-soft/40 hover:text-red cursor-pointer"
+                            title={t('এই রেঞ্জ মুছুন', 'Delete this range')}
                           >
                             ✕
                           </button>
                         </td>
                       </tr>
                     );
-                  })}
+                  })
+                )}
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-line bg-paper/80 font-bold text-ink">

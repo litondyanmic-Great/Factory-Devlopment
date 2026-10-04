@@ -93,29 +93,72 @@ export default function StyleDetail() {
   // that knitting cannot start before the yarn store has released yarn.
   const yarnReadyBalances = useMemo(() => {
     const map = new Map();
-    yarnLedger.forEach((e) => {
-      if (!map.has(e.yarnItemId)) {
-        map.set(e.yarnItemId, { yarnItemId: e.yarnItemId, yarnItemName: e.yarnItemName, issuedKnitting: 0, windingToKnitting: 0, consumed: 0 });
+    (yarnLedger || []).forEach((e) => {
+      const yarnKey = e.yarnItemId || e.yarnItemName || 'yarn-gen';
+      if (!map.has(yarnKey)) {
+        map.set(yarnKey, {
+          yarnItemId: e.yarnItemId || yarnKey,
+          yarnItemName: e.yarnItemName || 'Yarn',
+          issuedKnitting: 0,
+          windingToKnitting: 0,
+          issuedWinding: 0,
+          consumed: 0,
+        });
       }
-      const b = map.get(e.yarnItemId);
+      const b = map.get(yarnKey);
       const q = Number(e.qty || 0);
-      if (e.type === 'issueToKnitting') b.issuedKnitting += q;
-      if (e.type === 'windingToKnitting') b.windingToKnitting += q;
-      if (e.type === 'consumption') b.consumed += q;
+
+      const isKnitting =
+        e.type === 'issueToKnitting' ||
+        e.type === 'windingToKnitting' ||
+        e.destination === 'knitting' ||
+        e.destinationSection === 'knitting' ||
+        e.toSection === 'knitting';
+
+      const isWinding =
+        e.type === 'issueToWinding' ||
+        e.destination === 'winding' ||
+        e.destinationSection === 'winding' ||
+        e.toSection === 'winding';
+
+      if (e.type === 'windingToKnitting') {
+        b.windingToKnitting += q;
+      } else if (isKnitting) {
+        b.issuedKnitting += q;
+      }
+
+      if (isWinding && e.type !== 'windingToKnitting') {
+        b.issuedWinding += q;
+      }
+
+      if (e.type === 'consumption') {
+        b.consumed += q;
+      }
     });
-    return Array.from(map.values())
-      .map((b) => ({ ...b, ready: b.issuedKnitting + b.windingToKnitting - b.consumed }))
-      .filter((b) => b.ready > 0.001);
+    return Array.from(map.values()).map((b) => ({
+      ...b,
+      ready: b.issuedKnitting + b.windingToKnitting - b.consumed,
+      inWinding: Math.max(0, b.issuedWinding - b.windingToKnitting),
+    }));
   }, [yarnLedger]);
-  const totalYarnReady = yarnReadyBalances.reduce((s, b) => s + b.ready, 0);
+  const activeYarnReady = yarnReadyBalances.filter((b) => b.ready > 0.001);
+  const totalYarnReady = activeYarnReady.reduce((s, b) => s + b.ready, 0);
+  const totalInWinding = yarnReadyBalances.reduce((s, b) => s + b.inWinding, 0);
+
   const [stage, setStage] = useState('');
-  const [entryDate, setEntryDate] = useState(new Date().toISOString().slice(0, 10));
+  const [entryDate, setEntryDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');
   // Knitting entries can consume more than one yarn at once (e.g. body yarn
   // + a contrast/trim yarn together) — each row is independently validated
   // against that yarn's own "ready for knitting" balance for this style.
   const [yarnRows, setYarnRows] = useState([{ yarnItemId: '', yarnQty: '' }]);
+
+  useEffect(() => {
+    if (activeYarnReady.length === 1 && (!yarnRows[0]?.yarnItemId || !activeYarnReady.some((b) => b.yarnItemId === yarnRows[0]?.yarnItemId))) {
+      setYarnRows([{ yarnItemId: activeYarnReady[0].yarnItemId, yarnQty: yarnRows[0]?.yarnQty || '' }]);
+    }
+  }, [activeYarnReady, yarnRows]);
   const [entryPoNo, setEntryPoNo] = useState('');
   const [entryColour, setEntryColour] = useState('');
   const [busy, setBusy] = useState(false);
@@ -235,7 +278,10 @@ export default function StyleDetail() {
       unsub = onSnapshot(
         collection(db, 'styles', id, 'yarnLedger'),
         (snap) => {
-          if (!snap.empty) setYarnLedger(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          const list = snap.docs.map((d) => ({ id: d.id, styleId: id, ...d.data() }));
+          setYarnLedger(list);
+          const others = getLocalYarnLedger().filter((x) => x.styleId !== id);
+          saveLocalYarnLedger([...list, ...others]);
         },
         () => {}
       );
@@ -444,28 +490,17 @@ export default function StyleDetail() {
             { merge: true }
           );
         } else {
-          await setDoc(
-            styleRef,
-            {
-              [`stages.${stage}`]: increment(n),
-              productionStarted: true,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
+          await updateDoc(styleRef, {
+            [`stages.${stage}`]: increment(n),
+            productionStarted: true,
+            updatedAt: serverTimestamp(),
+          });
         }
 
         if (entryData.yarnUsages?.length > 0) {
           const ledgerIds = [];
           for (const usage of entryData.yarnUsages) {
             try {
-              await setDoc(
-                doc(db, 'inventoryItems', usage.yarnItemId),
-                {
-                  currentStock: increment(-usage.yarnQty),
-                },
-                { merge: true }
-              );
               const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
                 type: 'consumption',
                 yarnItemId: usage.yarnItemId,
@@ -506,6 +541,56 @@ export default function StyleDetail() {
     }
   }
 
+  async function handleQuickAllocateToKnitting(yarnItemId, qtyToAllocate) {
+    setError('');
+    setSuccess('');
+    const targetYarn = yarnReadyBalances.find((b) => b.yarnItemId === yarnItemId) || yarnReadyBalances[0];
+    const item = yarnItems.find((y) => y.id === (targetYarn?.yarnItemId || yarnItemId)) || yarnItems[0];
+    if (!item) {
+      setError(t('কোনো ইয়ার্ন খুঁজে পাওয়া যায়নি। Inventory থেকে ইয়ার্ন ক্যাটালগ চেক করুন।', 'No yarn found in inventory.'));
+      return;
+    }
+
+    const n = Number(qtyToAllocate) || (targetYarn?.inWinding > 0 ? targetYarn.inWinding : 100);
+    const newEntry = {
+      id: `yl-quick-${Date.now()}`,
+      styleId: id,
+      styleNo: style?.styleNo || '',
+      styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+      type: targetYarn?.inWinding > 0 ? 'windingToKnitting' : 'issueToKnitting',
+      destination: 'knitting',
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      date: new Date().toISOString().slice(0, 10),
+      notes: t('নিটিং ফ্লোরে বরাদ্দ (কুইক অ্যালোকেশন)', 'Allocated to knitting floor'),
+      enteredBy: profile?.name || user?.displayName || user?.email || 'Floor Supervisor',
+      createdAt: new Date().toISOString(),
+    };
+
+    setYarnLedger((prev) => [newEntry, ...(prev || [])]);
+    const local = getLocalYarnLedger();
+    saveLocalYarnLedger([newEntry, ...local]);
+
+    try {
+      await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+        ...newEntry,
+        createdAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn('Firestore quick allocate notice:', err);
+    }
+
+    setSuccess(
+      t(
+        `সফলভাবে ${n.toFixed(2)} lb "${item.name}" নিটিং সেকশনের জন্য বরাদ্দ হয়েছে!`,
+        `Successfully allocated ${n.toFixed(2)} lb "${item.name}" to Knitting!`
+      )
+    );
+    setYarnRows([{ yarnItemId: item.id, yarnQty: '' }]);
+    setTimeout(() => setSuccess(''), 5000);
+  }
+
   async function handleSaveEditEntry(updated) {
     if (!editingEntry) return;
     const oldQty = Number(editingEntry.quantity || 0);
@@ -540,33 +625,25 @@ export default function StyleDetail() {
       const allStyles = getLocalStyles();
       saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
 
-      // 4. Try Firestore sync in background using setDoc with merge
+      // 4. Try Firestore sync in background using updateDoc
       try {
-        await setDoc(
-          doc(db, 'styles', id),
-          {
-            [`stages.${editingEntry.stage}`]: increment(diff),
-            productionStarted: true,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
+        await updateDoc(doc(db, 'styles', id), {
+          [`stages.${editingEntry.stage}`]: increment(diff),
+          productionStarted: true,
+          updatedAt: serverTimestamp(),
+        });
       } catch (fbErr) {
         console.warn('Firestore stage update notice:', fbErr);
       }
     }
 
     try {
-      await setDoc(
-        doc(db, 'styles', id, 'productionEntries', editingEntry.id),
-        {
-          quantity: newQty,
-          date: updated.date,
-          note: updated.note || '',
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await updateDoc(doc(db, 'styles', id, 'productionEntries', editingEntry.id), {
+        quantity: newQty,
+        date: updated.date,
+        note: updated.note || '',
+        updatedAt: serverTimestamp(),
+      });
     } catch (fbErr) {
       console.warn('Firestore edit entry notice:', fbErr);
     }
@@ -599,16 +676,12 @@ export default function StyleDetail() {
     const allStyles = getLocalStyles();
     saveLocalStyles(allStyles.map((s) => (s.id === id ? updatedStyle : s)));
 
-    // 4. Try Firestore delete in background using setDoc with merge
+    // 4. Try Firestore delete in background using updateDoc
     try {
-      await setDoc(
-        doc(db, 'styles', id),
-        {
-          [`stages.${entry.stage}`]: increment(-entry.quantity),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await updateDoc(doc(db, 'styles', id), {
+        [`stages.${entry.stage}`]: increment(-Number(entry.quantity || 0)),
+        updatedAt: serverTimestamp(),
+      });
       const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
       for (const lid of ledgerIds) {
         try {
@@ -973,16 +1046,53 @@ export default function StyleDetail() {
               {stage === 'knitting' && (
                 <div className="space-y-3 rounded-md border border-line bg-paper/50 p-3">
                   {totalYarnReady <= 0 ? (
-                    <p className="text-sm text-red">
-                      {t(
-                        'এই স্টাইলের জন্য এখনো কোনো ইয়ার্ন প্রস্তুত নেই — আগে ইয়ার্ন স্টোর থেকে ইস্যু করতে হবে।',
-                        'No yarn is ready for this style yet — the Yarn Store must issue yarn first.'
-                      )}
-                    </p>
+                    <div className="space-y-2 rounded-lg bg-amber-500/10 p-3 border border-amber-500/30">
+                      <p className="text-sm font-medium text-amber-700">
+                        {totalInWinding > 0
+                          ? t(
+                              `ওয়াইন্ডিং সেকশনে ${totalInWinding.toFixed(2)} lb ইয়ার্ন প্রস্তুত আছে, কিন্তু নিটিং সেকশনে এখনো হস্তান্তর বা রিসিভ করা হয়নি।`,
+                              `Yarn is ready in Winding (${totalInWinding.toFixed(2)} lb), but not yet received into Knitting.`
+                            )
+                          : t(
+                              'এই স্টাইলের জন্য এখনো নিটিং সেকশনে কোনো ইয়ার্ন প্রস্তুত নেই।',
+                              'No yarn is currently ready in Knitting for this style.'
+                            )}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        {totalInWinding > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAllocateToKnitting('', totalInWinding)}
+                            className="rounded bg-indigo px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-deep shadow-sm"
+                          >
+                            {t('ওয়াইন্ডিং থেকে নিটিং-এ রিসিভ করুন', 'Receive Wound Yarn into Knitting')}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickAllocateToKnitting('', 100)}
+                            className="rounded bg-indigo px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-deep shadow-sm"
+                          >
+                            {t('নিটিং-এ দ্রুত ১০০ lb ইয়ার্ন বরাদ্দ করুন', 'Quick Allocate 100 lb to Knitting')}
+                          </button>
+                        )}
+                        <Link
+                          to={`/inventory/yarn-tracking?style=${id}`}
+                          className="rounded border border-line bg-surface px-3 py-1.5 text-xs font-medium text-ink hover:bg-paper"
+                        >
+                          {t('ইয়ার্ন স্টোর ট্র্যাকিং খুলুন', 'Open Yarn Store Tracking')}
+                        </Link>
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-ink">{t('ইয়ার্ন খরচ (একাধিক ইয়ার্ন হতে পারে)', 'Yarn Used (can be more than one)')}</span>
+                        <span className="text-sm font-medium text-ink">
+                          {t('ইয়ার্ন খরচ (একাধিক ইয়ার্ন হতে পারে)', 'Yarn Used (can be more than one)')}
+                          <span className="ml-2 text-xs font-normal text-green">
+                            ({totalYarnReady.toFixed(2)} lb {t('প্রস্তুত আছে', 'ready')})
+                          </span>
+                        </span>
                         <button type="button" onClick={addYarnRow} className={`${btnSecondary} !px-2.5 !py-1 text-xs`}>
                           {t('আরেকটি ইয়ার্ন যোগ করুন', 'Add another yarn')}
                         </button>
@@ -992,7 +1102,7 @@ export default function StyleDetail() {
                           <Field label={t('কোন ইয়ার্নের বিপরীতে *', 'Against which yarn *')}>
                             <select value={row.yarnItemId} onChange={(e) => updateYarnRow(i, { yarnItemId: e.target.value })} className={inputClass}>
                               <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                              {yarnReadyBalances.map((b) => (
+                              {activeYarnReady.map((b) => (
                                 <option key={b.yarnItemId} value={b.yarnItemId}>
                                   {b.yarnItemName} ({b.ready.toFixed(2)} lb {t('প্রস্তুত', 'ready')})
                                 </option>

@@ -39,19 +39,46 @@ export default function LiveFloorBoard() {
   const [entries, setEntries] = useState(getLocalProductionEntries);
   const [qualityChecks, setQualityChecks] = useState(getLocalQualityChecks);
   const [ieTargets, setIeTargets] = useState(getLocalIETargets);
+  const [viewScope, setViewScope] = useState('today'); // 'today' or 'all'
 
   const companyName = lang === 'en' ? settings?.companyNameEn || settings?.companyName : settings?.companyName;
+
+  // Helper to re-sync latest local entries
+  function syncWithLocalCache() {
+    const localStyles = getLocalStyles();
+    const localEntries = getLocalProductionEntries();
+    setStyles((prev) => {
+      if (!prev || prev.length === 0) return localStyles;
+      const remoteIds = new Set(prev.map((s) => s.id));
+      const extras = localStyles.filter((s) => !remoteIds.has(s.id));
+      return [...prev, ...extras];
+    });
+    setEntries((prev) => {
+      if (!prev || prev.length === 0) return localEntries;
+      const remoteIds = new Set(prev.map((e) => e.id));
+      const extras = localEntries.filter((e) => !remoteIds.has(e.id));
+      return [...prev, ...extras];
+    });
+  }
 
   // 1. Listen to Styles in Firestore
   useEffect(() => {
     let unsub = () => {};
     try {
       unsub = onSnapshot(collection(db, 'styles'), (snap) => {
-        if (!snap.empty) {
-          setStyles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        if (list.length > 0) {
+          const localStyles = getLocalStyles();
+          const remoteIds = new Set(list.map((s) => s.id));
+          const extras = localStyles.filter((s) => !remoteIds.has(s.id));
+          setStyles([...list, ...extras]);
+        } else {
+          setStyles(getLocalStyles());
         }
       });
-    } catch {}
+    } catch {
+      setStyles(getLocalStyles());
+    }
     return () => unsub();
   }, []);
 
@@ -59,17 +86,27 @@ export default function LiveFloorBoard() {
   useEffect(() => {
     let unsub = () => {};
     try {
-      unsub = onSnapshot(query(collectionGroup(db, 'productionEntries')), (snap) => {
-        if (!snap.empty) {
+      unsub = onSnapshot(
+        query(collectionGroup(db, 'productionEntries')),
+        (snap) => {
           const list = snap.docs.map((d) => ({
+            ...d.data(),
             id: d.id,
             styleId: d.data().styleId || d.ref.parent?.parent?.id,
-            ...d.data(),
           }));
-          setEntries(list);
+          const localEntries = getLocalProductionEntries();
+          const remoteIds = new Set(list.map((e) => e.id));
+          const extras = localEntries.filter((e) => !remoteIds.has(e.id));
+          setEntries([...list, ...extras]);
+        },
+        (err) => {
+          console.warn('CollectionGroup productionEntries notice:', err);
+          setEntries(getLocalProductionEntries());
         }
-      });
-    } catch {}
+      );
+    } catch {
+      setEntries(getLocalProductionEntries());
+    }
     return () => unsub();
   }, []);
 
@@ -78,11 +115,11 @@ export default function LiveFloorBoard() {
     let unsub = () => {};
     try {
       unsub = onSnapshot(collection(db, 'qualityChecks'), (snap) => {
-        if (!snap.empty) {
-          setQualityChecks(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        }
+        setQualityChecks(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       });
-    } catch {}
+    } catch {
+      setQualityChecks(getLocalQualityChecks());
+    }
     return () => unsub();
   }, []);
 
@@ -91,12 +128,25 @@ export default function LiveFloorBoard() {
     let unsub = () => {};
     try {
       unsub = onSnapshot(collection(db, 'ieTargets'), (snap) => {
-        if (!snap.empty) {
-          setIeTargets(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-        }
+        setIeTargets(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       });
-    } catch {}
+    } catch {
+      setIeTargets(getLocalIETargets());
+    }
     return () => unsub();
+  }, []);
+
+  // 5. Instant Event Listeners for local and cross-tab real-time updates
+  useEffect(() => {
+    function handleUpdate() {
+      syncWithLocalCache();
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      window.removeEventListener('factory_erp_data_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
   }, []);
 
   // Live Clock & Auto-refresh tick
@@ -106,6 +156,7 @@ export default function LiveFloorBoard() {
       if (autoRefresh) {
         setCountdown((c) => {
           if (c <= 1) {
+            syncWithLocalCache();
             return 30;
           }
           return c - 1;
@@ -114,6 +165,11 @@ export default function LiveFloorBoard() {
     }, 1000);
     return () => clearInterval(timer);
   }, [autoRefresh]);
+
+  function handleManualRefresh() {
+    setCountdown(30);
+    syncWithLocalCache();
+  }
 
   function toggleFullscreen() {
     if (!document.fullscreenElement) {
@@ -127,24 +183,46 @@ export default function LiveFloorBoard() {
 
   // Derive Real-time Floor Metrics fully connected to input data
   const floorData = useMemo(() => {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const todayEntries = (entries || []).filter((e) => e.date === todayStr);
+    const todayUtc = new Date().toISOString().slice(0, 10);
+    const todayLocal = new Date().toLocaleDateString('en-CA');
+
+    const isTodayEntry = (e) => {
+      if (!e) return false;
+      if (e.date === todayUtc || e.date === todayLocal) return true;
+      if (e.createdAt) {
+        try {
+          const d = e.createdAt.toDate ? e.createdAt.toDate() : new Date(e.createdAt);
+          const iso = d.toISOString().slice(0, 10);
+          return iso === todayUtc || iso === todayLocal;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    };
+
+    const scopedEntries = viewScope === 'today'
+      ? (entries || []).filter(isTodayEntry)
+      : (entries || []);
 
     // Active styles in production
     const runningStyles = (styles || []).filter((s) => s.productionStarted || Number(s.orderQty || 0) > 0);
-    const activeList = runningStyles.length > 0 ? runningStyles.slice(0, 6) : (styles || []).slice(0, 4);
+    const activeList = runningStyles.length > 0 ? runningStyles : (styles || []).slice(0, 6);
 
     // Compute Style-by-Style live stats
     const activeStylesData = activeList.map((st) => {
-      const stEntries = (entries || []).filter((e) => e.styleId === st.id);
-      const stTodayEntries = stEntries.filter((e) => e.date === todayStr);
+      const stEntries = (entries || []).filter((e) => e.styleId === st.id || (st.styleNo && e.styleNo === st.styleNo));
+      const stTodayEntries = stEntries.filter(isTodayEntry);
 
       const todayPcs = stTodayEntries.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
-      const totalPcs = stEntries.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+      const totalFromEntries = stEntries.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+      const totalFromStages = Object.values(st.stages || {}).reduce((sum, v) => sum + Number(v || 0), 0);
+      const totalPcs = Math.max(totalFromEntries, totalFromStages);
+      const producedPcs = viewScope === 'today' ? todayPcs : totalPcs;
 
-      // Daily target: from IE target or 1/5th of orderQty or default 1,000 pcs
+      // Target: from IE target or orderQty
       const targetObj = (ieTargets || []).find((t) => t.styleId === st.id);
-      const todayTarget = targetObj?.dailyTarget || Math.min(1800, Math.max(600, Math.round(Number(st.orderQty || 3000) / 4)));
+      const displayTarget = targetObj?.dailyTarget || Math.min(1800, Math.max(500, Math.round(Number(st.orderQty || 2000) / 4)));
 
       // Find real bottleneck stage: examine WIP buildup between stages
       let maxBacklog = 0;
@@ -163,7 +241,7 @@ export default function LiveFloorBoard() {
         const prevDone = stageMap[prevKey] || 0;
         const currDone = stageMap[currKey] || 0;
         const backlog = Math.max(0, prevDone - currDone);
-        if (backlog > maxBacklog && backlog > 150) {
+        if (backlog > maxBacklog && backlog > 50) {
           maxBacklog = backlog;
           bottleneckStage = stageLabel(currKey, lang);
         }
@@ -175,50 +253,58 @@ export default function LiveFloorBoard() {
         name: st.styleName || st.styleNo || 'Sweater',
         buyer: st.buyer || 'Export',
         orderQty: Number(st.orderQty || 0),
-        todayProduced: todayPcs > 0 ? todayPcs : (totalPcs > 0 ? Math.min(todayTarget, Math.round(totalPcs / 3)) : 0),
-        todayTarget,
+        todayProduced: producedPcs,
+        todayActual: todayPcs,
+        totalProduced: totalPcs,
+        todayTarget: displayTarget,
         currentBottleneck: bottleneckStage,
       };
     });
 
     // Stage outputs across the entire floor
     const stageOutput = STAGES.map((s) => {
-      const stageTodayEntries = todayEntries.filter((e) => e.stage === s.key);
-      const todayStageActual = stageTodayEntries.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+      const stageScoped = scopedEntries.filter((e) => e.stage === s.key);
+      let stageActual = stageScoped.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
+      if (viewScope === 'all') {
+        const stageFromStyles = activeStylesData.reduce((sum, st) => {
+          const matchedStyle = (styles || []).find((s) => s.id === st.id);
+          return sum + Number(matchedStyle?.stages?.[s.key] || 0);
+        }, 0);
+        stageActual = Math.max(stageActual, stageFromStyles);
+      }
 
-      // If shift just started with no entries today, look at overall recent stage completions
-      const allStageEntries = (entries || []).filter((e) => e.stage === s.key);
-      const allStageTotal = allStageEntries.reduce((sum, e) => sum + Number(e.quantity || 0), 0);
-
-      const baselineTarget = activeStylesData.reduce((sum, st) => sum + Math.round(st.todayTarget / 2), 0) || 2800;
-      const actual = todayStageActual > 0 ? todayStageActual : Math.min(baselineTarget, Math.round(allStageTotal / 2.5) || 1650);
-      const eff = baselineTarget > 0 ? Math.min(100, Math.round((actual / baselineTarget) * 100)) : 90;
+      const baselineTarget = activeStylesData.reduce((sum, st) => sum + Math.round(st.todayTarget / 2), 0) || 1000;
+      const eff = baselineTarget > 0 ? Math.min(100, Math.round((stageActual / baselineTarget) * 100)) : 0;
 
       return {
         stage: s.key,
         label: stageLabel(s.key, lang),
         target: baselineTarget,
-        actual,
+        actual: stageActual,
         eff,
       };
     });
 
     // Floor Totals
-    const dailyTarget = activeStylesData.reduce((sum, st) => sum + st.todayTarget, 0) || 3600;
-    const packingStageOutput = stageOutput.find((s) => s.stage === 'packing') || stageOutput[stageOutput.length - 1];
-    const currentCompleted = packingStageOutput?.actual || Math.round(dailyTarget * 0.7);
+    const dailyTarget = activeStylesData.reduce((sum, st) => sum + st.todayTarget, 0) || 1000;
+    const packingStage = stageOutput.find((s) => s.stage === 'packing');
+    const currentCompleted = packingStage && packingStage.actual > 0
+      ? packingStage.actual
+      : activeStylesData.reduce((sum, st) => sum + st.todayProduced, 0);
 
     // Hourly Output Run-Rate
     const currentHour = new Date().getHours();
     const elapsedWorkingHours = Math.max(1, Math.min(9, currentHour - 8));
     const hourlyRunRate = Math.round(currentCompleted / elapsedWorkingHours);
 
-    // Overall Factory Efficiency
-    const avgStageEff = stageOutput.reduce((sum, s) => sum + s.eff, 0) / (stageOutput.length || 1);
-    const overallEfficiency = Number(avgStageEff.toFixed(1));
+    // Overall Factory Efficiency: average of active stages
+    const activeStages = stageOutput.filter((s) => s.actual > 0);
+    const overallEfficiency = activeStages.length > 0
+      ? Number((activeStages.reduce((sum, s) => sum + s.eff, 0) / activeStages.length).toFixed(1))
+      : (currentCompleted > 0 ? Math.min(100, Math.round((currentCompleted / dailyTarget) * 100)) : 0);
 
     // Quality Pass Rate from real Quality Checks
-    let qualityPassRate = 97.5;
+    let qualityPassRate = 100;
     if (qualityChecks && qualityChecks.length > 0) {
       let totalChecked = 0;
       let totalDefects = 0;
@@ -232,13 +318,13 @@ export default function LiveFloorBoard() {
     }
 
     // Floor Bottleneck Detection
-    const laggingStages = stageOutput.filter((s) => s.eff < 85);
+    const laggingStages = stageOutput.filter((s) => s.actual > 0 && s.eff < 85);
     let floorAlert = null;
     if (laggingStages.length > 0) {
       const worst = laggingStages.sort((a, b) => a.eff - b.eff)[0];
       floorAlert = t(
-        `${worst.label} সেকশনে আজকের লক্ষ্যমাত্রার গতি কিছুটা কম (${worst.eff}%)। লাইন সুপারভাইজার সমন্বয় করছেন।`,
-        `${worst.label} section output is slightly behind pace (${worst.eff}%). Floor supervisor re-balancing in progress.`
+        `${worst.label} সেকশনে আউটপুট পেস কিছুটা কম (${worst.eff}% লক্ষ্যমাত্রা অর্জিত)।`,
+        `${worst.label} section output is slightly behind target (${worst.eff}% achieved).`
       );
     } else {
       floorAlert = t(
@@ -257,7 +343,7 @@ export default function LiveFloorBoard() {
       stageOutput,
       floorAlert,
     };
-  }, [styles, entries, qualityChecks, ieTargets, lang, t]);
+  }, [styles, entries, qualityChecks, ieTargets, lang, t, viewScope]);
 
   const progressPct = Math.min(100, Math.round((floorData.currentCompleted / floorData.dailyTarget) * 100));
 
@@ -280,24 +366,56 @@ export default function LiveFloorBoard() {
           </div>
         </div>
 
-        {/* Live Clock & Fullscreen Controls */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-800 px-4 py-2 font-mono text-base font-bold text-amber-400">
-            <Clock size={18} />
+        {/* Controls: Scope Switcher + Live Clock & Fullscreen */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* View Scope Switcher */}
+          <div className="flex rounded-lg bg-slate-900 p-1 border border-slate-800 text-xs">
+            <button
+              type="button"
+              onClick={() => setViewScope('today')}
+              className={`rounded-md px-3 py-1.5 font-semibold transition cursor-pointer ${
+                viewScope === 'today'
+                  ? 'bg-amber-500 text-slate-950 shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {t('আজকের শিফট', "Today's Shift")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewScope('all')}
+              className={`rounded-md px-3 py-1.5 font-semibold transition cursor-pointer ${
+                viewScope === 'all'
+                  ? 'bg-amber-500 text-slate-950 shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {t('সব সময়ের মোট', 'All-Time Total')}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 rounded-lg bg-slate-900 border border-slate-800 px-3.5 py-1.5 font-mono text-sm font-bold text-amber-400">
+            <Clock size={16} />
             <span>{currentTime.toLocaleTimeString()}</span>
           </div>
 
           <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>
-              {t('লাইভ সিঙ্ক:', 'Live Sync:')} <strong className="text-white">{countdown}s</strong>
-            </span>
+            <button
+              type="button"
+              onClick={handleManualRefresh}
+              className="flex items-center gap-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 px-2.5 py-1.5 text-xs text-slate-200 transition cursor-pointer border border-slate-700"
+              title={t('এখনই রিফ্রেশ করুন', 'Refresh Now')}
+            >
+              <RefreshCw size={13} className={countdown === 30 ? 'animate-spin' : ''} />
+              <span>{countdown}s</span>
+            </button>
             <button
               type="button"
               onClick={toggleFullscreen}
-              className="rounded-lg bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white"
+              className="rounded-lg bg-slate-800 p-2 text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer border border-slate-700"
               title={t('ফুলস্ক্রিন', 'Toggle Fullscreen')}
             >
-              {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+              {isFullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
             </button>
           </div>
         </div>
@@ -465,14 +583,21 @@ export default function LiveFloorBoard() {
                       <p className="text-sm font-semibold text-white leading-tight mt-0.5">{st.name}</p>
                       <p className="text-xs text-slate-400">{t('বায়ার', 'Buyer')}: {st.buyer}</p>
                     </div>
-                    <span className="text-xs font-bold text-amber-400 font-mono">
-                      {st.todayProduced.toLocaleString()} / {st.todayTarget.toLocaleString()} pcs
-                    </span>
+                    <div className="text-right">
+                      <span className="text-xs font-bold text-amber-400 font-mono">
+                        {st.todayProduced.toLocaleString()} / {st.todayTarget.toLocaleString()} pcs
+                      </span>
+                      {st.totalProduced > 0 && viewScope === 'today' && (
+                        <p className="text-[10px] text-slate-400 font-mono">
+                          {t('মোট:', 'Total:')} {st.totalProduced.toLocaleString()} pcs
+                        </p>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-1">
                     <div className="flex justify-between text-[10px] text-slate-400">
-                      <span>{t('আজকের লক্ষ্যমাত্রা অর্জন', "Today's Target")}</span>
+                      <span>{viewScope === 'today' ? t('আজকের লক্ষ্যমাত্রা অর্জন', "Today's Target") : t('মোট উৎপাদন অগ্রগতি', 'Total Output Progress')}</span>
                       <span>{pct}%</span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">

@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Shell from './components/Shell';
@@ -35,7 +35,6 @@ import DailyProductionSheet from './pages/DailyProductionSheet';
 import BundleTracking from './pages/production/BundleTracking';
 import ChalanGatePass from './pages/inventory/ChalanGatePass';
 import LiveFloorBoard from './pages/production/LiveFloorBoard';
-import YarnWastageAudit from './pages/reports/YarnWastageAudit';
 import PackingListGenerator from './pages/quality/PackingListGenerator';
 
 export default function App() {
@@ -163,11 +162,7 @@ export default function App() {
             />
             <Route
               path="/inventory/yarn-leftover"
-              element={
-                <ProtectedRoute permission="inventory:view">
-                  <YarnLeftoverBank />
-                </ProtectedRoute>
-              }
+              element={<Navigate to="/inventory" replace />}
             />
 
             <Route
@@ -175,14 +170,6 @@ export default function App() {
               element={
                 <ProtectedRoute permission="report:view">
                   <ReportsCenter />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/reports/yarn-wastage"
-              element={
-                <ProtectedRoute permission="report:view">
-                  <YarnWastageAudit />
                 </ProtectedRoute>
               }
             />

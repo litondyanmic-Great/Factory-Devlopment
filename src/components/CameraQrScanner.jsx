@@ -13,62 +13,100 @@ export default function CameraQrScanner({ onScan, onClose, autoCloseOnScan = fal
   const [error, setError] = useState('');
   const [lastScanned, setLastScanned] = useState('');
   const [flash, setFlash] = useState(false);
+  const [manualCode, setManualCode] = useState('');
   const fileInputRef = useRef(null);
 
+  const [quickBundles, setQuickBundles] = useState([]);
   useEffect(() => {
-    let isMounted = true;
+    try {
+      const stored = localStorage.getItem('factory_erp_bundles_data');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          setQuickBundles(parsed.slice(0, 5));
+        }
+      }
+    } catch {}
+  }, []);
+
+  function handleManualSubmit(e) {
+    e?.preventDefault();
+    if (!manualCode.trim()) return;
+    const clean = manualCode.trim();
+    setLastScanned(clean);
+    setFlash(true);
+    setTimeout(() => setFlash(false), 500);
+    if (onScan) onScan(clean);
+    setManualCode('');
+    if (autoCloseOnScan && onClose) onClose();
+  }
+
+  function handleQuickClick(code) {
+    if (!code) return;
+    setLastScanned(code);
+    setFlash(true);
+    setTimeout(() => setFlash(false), 500);
+    if (onScan) onScan(code);
+    if (autoCloseOnScan && onClose) onClose();
+  }
+
+  async function initCamera() {
+    setStarting(true);
+    setError('');
     const cid = containerIdRef.current;
-    const scanner = new Html5Qrcode(cid);
-    html5QrCodeInstance.current = scanner;
-
-    const config = {
-      fps: 10,
-      qrbox: { width: 250, height: 250 },
-      aspectRatio: 1.0,
-    };
-
-    function handleSuccess(decodedText) {
-      if (!isMounted) return;
-      setLastScanned(decodedText);
-      setFlash(true);
-      setTimeout(() => setFlash(false), 500);
-
-      try {
-        // Audio beep feedback
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.frequency.setValueAtTime(880, audioCtx.currentTime);
-        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-        osc.start();
-        osc.stop(audioCtx.currentTime + 0.15);
-      } catch {}
-
-      if (onScan) {
-        onScan(decodedText);
-      }
-      if (autoCloseOnScan && onClose) {
-        onClose();
-      }
+    if (!document.getElementById(cid)) {
+      setTimeout(initCamera, 100);
+      return;
     }
 
-    // Smart multi-stage camera startup:
-    // 1. Try back/environment camera
-    // 2. If OverconstrainedError or fails, try any available camera from getCameras()
-    // 3. If that fails, fallback to user camera
-    async function startCamera() {
-      setStarting(true);
-      setError('');
+    try {
+      if (html5QrCodeInstance.current) {
+        try {
+          if (html5QrCodeInstance.current.isScanning) {
+            await html5QrCodeInstance.current.stop();
+          }
+          await html5QrCodeInstance.current.clear();
+        } catch {}
+      }
+      const scanner = new Html5Qrcode(cid);
+      html5QrCodeInstance.current = scanner;
 
-      try {
-        // First try back camera
-        await scanner.start({ facingMode: 'environment' }, config, handleSuccess, () => {});
-        if (isMounted) {
-          setCameraActive(true);
-          setStarting(false);
+      const config = {
+        fps: 10,
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+      };
+
+      function handleSuccess(decodedText) {
+        setLastScanned(decodedText);
+        setFlash(true);
+        setTimeout(() => setFlash(false), 500);
+
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+          osc.start();
+          osc.stop(audioCtx.currentTime + 0.15);
+        } catch {}
+
+        if (onScan) {
+          onScan(decodedText);
         }
+        if (autoCloseOnScan && onClose) {
+          onClose();
+        }
+      }
+
+      // Try camera with facingMode environment first
+      try {
+        await scanner.start({ facingMode: 'environment' }, config, handleSuccess, () => {});
+        setCameraActive(true);
+        setStarting(false);
       } catch (err1) {
         console.warn('Environment camera failed, trying getCameras fallback:', err1);
         try {
@@ -76,37 +114,33 @@ export default function CameraQrScanner({ onScan, onClose, autoCloseOnScan = fal
           if (cameras && cameras.length > 0) {
             const cameraId = cameras[cameras.length - 1].id || cameras[0].id;
             await scanner.start(cameraId, config, handleSuccess, () => {});
-            if (isMounted) {
-              setCameraActive(true);
-              setStarting(false);
-            }
+            setCameraActive(true);
+            setStarting(false);
           } else {
-            // Try standard video
             await scanner.start({ facingMode: 'user' }, config, handleSuccess, () => {});
-            if (isMounted) {
-              setCameraActive(true);
-              setStarting(false);
-            }
+            setCameraActive(true);
+            setStarting(false);
           }
         } catch (err2) {
           console.error('All camera attempts failed:', err2);
-          if (isMounted) {
-            setStarting(false);
-            setError(
-              t(
-                'ক্যামেরা ওপেন করা যায়নি (অনুমতি দেওয়া নেই অথবা ওয়েবক্যাম কানেক্টেড নেই)। নিচের "ছবি আপলোড করুন" অপশন বা সরাসরি কোড লিখে এন্ট্রি করতে পারেন।',
-                'Could not start camera (permission denied or no webcam detected). You can use "Scan from Image" below or type code directly.'
-              )
-            );
-          }
+          setStarting(false);
+          setError(
+            t(
+              'ওয়েবক্যাম/ক্যামেরা এক্সেস করা যায়নি (ব্রাউজার অনুমতি প্রয়োজন বা ক্যামেরা অনুপস্থিত)। নিচে সরাসরি কোড লিখুন বা ছবি আপলোড করুন।',
+              'Could not access webcam/camera (permission needed or no camera). You can type the code below or upload an image.'
+            )
+          );
         }
       }
+    } catch (e) {
+      setStarting(false);
+      setError(t('ক্যামেরা চালু করতে সমস্যা হয়েছে।', 'Failed to start camera feed.'));
     }
+  }
 
-    startCamera();
-
+  useEffect(() => {
+    initCamera();
     return () => {
-      isMounted = false;
       if (html5QrCodeInstance.current) {
         try {
           if (html5QrCodeInstance.current.isScanning) {
@@ -200,19 +234,29 @@ export default function CameraQrScanner({ onScan, onClose, autoCloseOnScan = fal
       )}
 
       {error ? (
-        <div className="rounded-lg bg-red-soft/40 p-3 text-xs text-red space-y-2">
+        <div className="rounded-lg bg-red-soft/40 p-3 text-xs text-red space-y-2.5">
           <div className="flex items-start gap-2">
             <AlertCircle size={16} className="shrink-0 mt-0.5" />
             <p>{error}</p>
           </div>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="flex items-center gap-1.5 rounded bg-surface px-3 py-1.5 font-semibold text-ink border border-line shadow-sm hover:bg-paper"
-          >
-            <Upload size={14} className="text-indigo" />
-            {t('কিউআর কোডের ছবি আপলোড করে স্ক্যান করুন', 'Upload QR Code Image Instead')}
-          </button>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              type="button"
+              onClick={initCamera}
+              className="flex items-center gap-1.5 rounded bg-surface px-3 py-1.5 font-semibold text-ink border border-line shadow-sm hover:bg-paper"
+            >
+              <RefreshCw size={13} className="text-indigo" />
+              {t('ক্যামেরা পুনরায় চেষ্টা করুন', 'Retry Camera')}
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex items-center gap-1.5 rounded bg-surface px-3 py-1.5 font-semibold text-ink border border-line shadow-sm hover:bg-paper"
+            >
+              <Upload size={13} className="text-indigo" />
+              {t('কিউআর কোডের ছবি আপলোড করুন', 'Upload QR Image')}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="relative mx-auto overflow-hidden rounded-lg bg-black max-w-[320px]">
@@ -224,6 +268,42 @@ export default function CameraQrScanner({ onScan, onClose, autoCloseOnScan = fal
             <span className="bg-black/70 px-2 py-1 rounded text-[10px] text-white font-medium">
               {t('কিউআর কোড মাঝখানে ধরুন', 'Center QR code inside box')}
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Input Fallback */}
+      <form onSubmit={handleManualSubmit} className="flex gap-2 pt-1 border-t border-line">
+        <input
+          type="text"
+          placeholder={t('বান্ডেল নং লিখুন বা পেস্ট করুন (যেমন: BND-...)', 'Type or paste Bundle No...')}
+          className="flex-1 rounded-md border border-line bg-paper px-3 py-1.5 text-xs text-ink placeholder:text-ink-soft focus:border-indigo focus:outline-none"
+          value={manualCode}
+          onChange={(e) => setManualCode(e.target.value)}
+        />
+        <button
+          type="submit"
+          className="rounded-md bg-indigo px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-deep cursor-pointer"
+        >
+          {t('স্ক্যান সাবমিট', 'Submit')}
+        </button>
+      </form>
+
+      {/* Quick Click Bundles */}
+      {quickBundles.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-[11px] text-ink-soft">{t('সাম্প্রতিক বান্ডেল (১-ক্লিক স্ক্যান):', 'Recent Bundles (1-click scan):')}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {quickBundles.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => handleQuickClick(b.bundleNo)}
+                className="rounded border border-indigo/30 bg-indigo-soft/60 px-2 py-0.5 font-mono text-[11px] font-semibold text-indigo hover:bg-indigo hover:text-white transition"
+              >
+                {b.bundleNo} ({b.size || ''} {b.qty ? `${b.qty}pcs` : ''})
+              </button>
+            ))}
           </div>
         </div>
       )}

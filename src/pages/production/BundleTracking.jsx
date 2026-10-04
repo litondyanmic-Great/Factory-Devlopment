@@ -411,15 +411,11 @@ export default function BundleTracking() {
           createdAt: serverTimestamp(),
         };
         addDoc(collection(db, 'styles', bundle.styleId, 'productionEntries'), entryData).catch(() => {});
-        setDoc(
-          doc(db, 'styles', bundle.styleId),
-          {
-            [`stages.${stageDone}`]: increment(q),
-            productionStarted: true,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        ).catch(() => {});
+        updateDoc(doc(db, 'styles', bundle.styleId), {
+          [`stages.${stageDone}`]: increment(q),
+          productionStarted: true,
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
       } catch (err) {
         console.warn('Bundle progress sync notice:', err);
       }
@@ -434,51 +430,37 @@ export default function BundleTracking() {
   }
 
   function handlePrintNow() {
-    const printable = document.querySelector('.bundle-cards-grid');
-    if (!printable) {
-      window.print();
-      return;
-    }
-    const printWindow = window.open('', '_blank');
-    if (printWindow) {
-      printWindow.document.write(`
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <meta charset="UTF-8">
-            <title>Bundle QR Tickets Print</title>
-            <style>
-              @page { size: A4 portrait; margin: 8mm; }
-              * { box-sizing: border-box; }
-              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; background: #fff; color: #111; }
-              .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-              .card { border: 2px dashed #444; border-radius: 8px; padding: 12px; background: #fff; page-break-inside: avoid; break-inside: avoid; }
-              .no-print { margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
-              @media print { .no-print { display: none !important; } }
-            </style>
-          </head>
-          <body>
-            <div class="no-print">
-              <h3 style="margin: 0; font-size: 16px;">Sweater Factory — Bundle Tickets</h3>
-              <button onclick="window.print()" style="padding: 8px 20px; background: #1B2C46; color: #fff; border: 0; border-radius: 6px; font-weight: bold; cursor: pointer;">🖨️ Print Now</button>
-            </div>
-            <div class="grid">${printable.innerHTML}</div>
-            <script>
-              window.onload = function() {
-                setTimeout(function() { window.print(); }, 250);
-              };
-            </script>
-          </body>
-        </html>
-      `);
-      printWindow.document.close();
-    } else {
-      window.print();
-    }
+    window.print();
   }
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-16">
+      {/* Print isolation style */}
+      <style>{`
+        @media print {
+          nav, header, aside, .print\\:hidden {
+            display: none !important;
+          }
+          body {
+            background: #fff !important;
+            color: #000 !important;
+          }
+          .bundle-cards-grid {
+            display: grid !important;
+            grid-template-columns: repeat(2, 1fr) !important;
+            gap: 12px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          .bundle-cards-grid > div {
+            border: 2px dashed #333 !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+            background: #fff !important;
+          }
+        }
+      `}</style>
+
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between print:hidden">
         <div>

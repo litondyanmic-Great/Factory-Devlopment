@@ -160,7 +160,7 @@ export default function ChalanGatePass() {
     isReturnable: false,
     date: new Date().toISOString().slice(0, 10),
     time: new Date().toTimeString().slice(0, 5),
-    items: [{ desc: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
+    items: [{ desc: '', lotNo: '', color: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
     preparedBy: '',
     approvedBy: '',
   });
@@ -202,7 +202,7 @@ export default function ChalanGatePass() {
       isReturnable: false,
       date: new Date().toISOString().slice(0, 10),
       time: new Date().toTimeString().slice(0, 5),
-      items: [{ desc: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
+      items: [{ desc: '', lotNo: '', color: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
       preparedBy: profile?.name || user?.displayName || 'Store Officer',
       approvedBy: 'Production Manager',
     });
@@ -224,7 +224,11 @@ export default function ChalanGatePass() {
       isReturnable: Boolean(chalan.isReturnable),
       date: chalan.date || new Date().toISOString().slice(0, 10),
       time: chalan.time || new Date().toTimeString().slice(0, 5),
-      items: (chalan.items || []).map((it) => ({ ...it })),
+      items: (chalan.items || []).map((it) => ({
+        ...it,
+        lotNo: it.lotNo || '',
+        color: it.color || it.colorLot || '',
+      })),
       preparedBy: chalan.preparedBy || profile?.name || user?.displayName || 'Store Officer',
       approvedBy: chalan.approvedBy || 'Production Manager',
     });
@@ -260,7 +264,7 @@ export default function ChalanGatePass() {
   function handleAddItem() {
     setForm((prev) => ({
       ...prev,
-      items: [...prev.items, { desc: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
+      items: [...prev.items, { desc: '', lotNo: '', color: '', colorLot: '', qty: '', unit: 'pcs', bags: '', notes: '' }],
     }));
   }
 
@@ -301,7 +305,13 @@ export default function ChalanGatePass() {
         isReturnable: form.isReturnable,
         date: form.date || existing?.date,
         time: form.time || existing?.time,
-        items: form.items.map((it, idx) => ({ ...it, id: it.id || idx + 1 })),
+        items: form.items.map((it, idx) => ({
+          ...it,
+          id: it.id || idx + 1,
+          lotNo: it.lotNo || '',
+          color: it.color || it.colorLot || '',
+          colorLot: it.colorLot || [it.color, it.lotNo ? `Lot: ${it.lotNo}` : ''].filter(Boolean).join(' / ') || '',
+        })),
         preparedBy: form.preparedBy || existing?.preparedBy || 'Store Incharge',
         approvedBy: form.approvedBy || existing?.approvedBy || 'Authorized Signatory',
         updatedAt: new Date().toISOString(),
@@ -349,7 +359,13 @@ export default function ChalanGatePass() {
       purpose: form.purpose || 'Official Delivery',
       isReturnable: form.isReturnable,
       status: 'dispatched',
-      items: form.items.map((it, idx) => ({ ...it, id: idx + 1 })),
+      items: form.items.map((it, idx) => ({
+        ...it,
+        id: idx + 1,
+        lotNo: it.lotNo || '',
+        color: it.color || it.colorLot || '',
+        colorLot: it.colorLot || [it.color, it.lotNo ? `Lot: ${it.lotNo}` : ''].filter(Boolean).join(' / ') || '',
+      })),
       preparedBy: form.preparedBy || profile?.name || user?.displayName || 'Store Incharge',
       approvedBy: form.approvedBy || 'Authorized Signatory',
       createdAt: new Date().toISOString(),
@@ -434,9 +450,9 @@ export default function ChalanGatePass() {
       ${selectedChalan.items.map((item, idx) => `
         <tr>
           <td class="text-center">${idx + 1}</td>
-          <td><strong>${item.name}</strong></td>
-          <td>${item.styleNo || '—'}</td>
-          <td>${item.lotNo || '—'} ${item.coneCount ? '(' + item.coneCount + ' cones)' : ''}</td>
+          <td><strong>${item.desc || item.name || 'Item'}</strong></td>
+          <td>${item.styleNo || selectedChalan.styleNo || '—'}</td>
+          <td>${item.lotNo ? '<strong>Lot: ' + item.lotNo + '</strong> ' : ''}${item.color || item.colorLot ? '(' + (item.color || item.colorLot) + ') ' : ''}${item.bags ? '[' + item.bags + ']' : ''}</td>
           <td class="text-right"><strong>${Number(item.qty).toLocaleString()}</strong></td>
           <td>${item.unit}</td>
         </tr>
@@ -575,7 +591,16 @@ export default function ChalanGatePass() {
                     <tr key={item.id} className="border-b border-gray-300">
                       <td className="border border-gray-400 p-2 text-center">{idx + 1}</td>
                       <td className="border border-gray-400 p-2 font-medium">{item.desc}</td>
-                      <td className="border border-gray-400 p-2">{item.colorLot || '—'}</td>
+                      <td className="border border-gray-400 p-2">
+                        {item.lotNo ? (
+                          <div>
+                            {item.color && <span className="font-medium">{item.color} </span>}
+                            <span className="font-mono text-gray-700 font-semibold">[Lot: {item.lotNo}]</span>
+                          </div>
+                        ) : (
+                          item.colorLot || item.color || '—'
+                        )}
+                      </td>
                       <td className="border border-gray-400 p-2 text-right font-bold">
                         {item.qty} {item.unit}
                       </td>
@@ -900,7 +925,7 @@ export default function ChalanGatePass() {
 
               {form.items.map((item, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-surface p-2.5 rounded border border-line">
-                  <div className="col-span-12 sm:col-span-4">
+                  <div className="col-span-12 sm:col-span-3">
                     <input
                       type="text"
                       required
@@ -913,13 +938,25 @@ export default function ChalanGatePass() {
                   <div className="col-span-6 sm:col-span-2">
                     <input
                       type="text"
-                      placeholder={t('কালার/লট', 'Color/Lot')}
+                      placeholder={t('লট নং (Lot No.)', 'Lot No.')}
                       className={`${inputClass} !py-1 text-xs`}
-                      value={item.colorLot}
-                      onChange={(e) => handleItemChange(idx, 'colorLot', e.target.value)}
+                      value={item.lotNo || ''}
+                      onChange={(e) => handleItemChange(idx, 'lotNo', e.target.value)}
                     />
                   </div>
                   <div className="col-span-6 sm:col-span-2">
+                    <input
+                      type="text"
+                      placeholder={t('কালার (Color)', 'Color')}
+                      className={`${inputClass} !py-1 text-xs`}
+                      value={item.color || item.colorLot || ''}
+                      onChange={(e) => {
+                        handleItemChange(idx, 'color', e.target.value);
+                        handleItemChange(idx, 'colorLot', e.target.value);
+                      }}
+                    />
+                  </div>
+                  <div className="col-span-4 sm:col-span-2">
                     <input
                       type="number"
                       required
@@ -929,7 +966,7 @@ export default function ChalanGatePass() {
                       onChange={(e) => handleItemChange(idx, 'qty', e.target.value)}
                     />
                   </div>
-                  <div className="col-span-6 sm:col-span-2">
+                  <div className="col-span-4 sm:col-span-1">
                     <select
                       className={`${inputClass} !py-1 text-xs`}
                       value={item.unit}
@@ -942,16 +979,16 @@ export default function ChalanGatePass() {
                       <option value="cartons">cartons</option>
                     </select>
                   </div>
-                  <div className="col-span-4 sm:col-span-1">
+                  <div className="col-span-3 sm:col-span-1">
                     <input
                       type="text"
-                      placeholder={t('বস্তা/ব্যাগ', 'Bags')}
+                      placeholder={t('ব্যাগ/কার্টুন', 'Bags')}
                       className={`${inputClass} !py-1 text-xs`}
                       value={item.bags}
                       onChange={(e) => handleItemChange(idx, 'bags', e.target.value)}
                     />
                   </div>
-                  <div className="col-span-2 sm:col-span-1 text-right">
+                  <div className="col-span-1 text-right">
                     <button
                       type="button"
                       onClick={() => handleRemoveItem(idx)}

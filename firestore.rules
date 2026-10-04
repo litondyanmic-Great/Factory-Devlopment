@@ -6,23 +6,29 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isFactoryOwner() {
+      return isSignedIn() && (
+        request.auth.token.email == 'liton.dynmic@gmail.com'
+      );
+    }
+
     function myProfile() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
     function myRole() {
-      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        ? myProfile().role
-        : 'none';
-    }
-
-    function isFactoryOwner() {
-      return isSignedIn() && request.auth.token.email == 'liton.dynmic@gmail.com';
+      return isFactoryOwner() ? 'admin' : (
+        isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          ? myProfile().role
+          : 'none'
+      );
     }
 
     function isActive() {
-      return isFactoryOwner() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && myProfile().status == 'active');
+      return isFactoryOwner() || (
+        isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          && myProfile().status == 'active'
+      );
     }
 
     function isAdmin() {
@@ -30,273 +36,217 @@ service cloud.firestore {
     }
 
     function hasRole(roles) {
-      return isFactoryOwner() || (isActive() && myRole() in roles);
+      return isFactoryOwner() || (isActive() && (myRole() in roles || myRole() == 'admin'));
     }
 
-    // True if I'm admin, OR the given section key is in my assigned
-    // sections list (users/{uid}.sections). Used to restrict production,
-    // quality, yarn-store, winding, and accessories-store entries to only
-    // the section(s) a staff member was granted in Admin > User Management.
     function mySections() {
       return ('sections' in myProfile()) ? myProfile().sections : [];
     }
 
     function canEnterSection(sectionKey) {
-      return isActive() && (myRole() == 'admin' || mySections().size() == 0 || sectionKey in mySections());
+      return isFactoryOwner() || (
+        isActive() && (
+          myRole() == 'admin' ||
+          mySections().size() == 0 ||
+          sectionKey in mySections()
+        )
+      );
     }
 
-    // True if I'm a full admin, OR an admin specifically granted me
-    // admin-level (edit/delete/manage) rights within this one area via
-    // users/{uid}.adminAreas — how GPQ/IE staff get elevated access in
-    // just the modules they own (see lib/constants.js hasAreaAdmin, the
-    // client-side mirror of this same check).
     function hasAdminArea(area) {
-      return isAdmin() || (isActive() && ('adminAreas' in myProfile()) && area in myProfile().adminAreas);
+      return isAdmin() || (
+        isActive() && ('adminAreas' in myProfile()) && area in myProfile().adminAreas
+      );
     }
 
-    // True if I'm admin, OR I was specifically flagged as a "Higher
-    // Authority" yarn-issue approver (Admin/PD/MD/DGM) via
-    // users/{uid}.canApproveYarnOverage — mirrors isYarnOverageApprover()
-    // in lib/constants.js.
     function isYarnApprover() {
-      return isAdmin() || (isActive() && myProfile().canApproveYarnOverage == true);
+      return isAdmin() || (
+        isActive() && myProfile().canApproveYarnOverage == true
+      );
     }
 
-    // Who may decide a receiving-inspection hold (approve despite an issue,
-    // or reject): the Quality Manager (granted the 'quality' admin area) or
-    // a Higher Authority — mirrors canDecideInspectionHold() in
-    // lib/constants.js.
     function canDecideInspection() {
       return hasAdminArea('quality') || isYarnApprover();
     }
 
-    // --- Collection-group access -------------------------------------
-    // Firestore requires a SEPARATE rule (beyond the nested subcollection
-    // rule above) to permit collectionGroup() queries that read across
-    // every style's subcollection at once. Without these, WindingQueue's
-    // cross-style yarnLedger query and Dashboard's cross-style
-    // productionEntries query silently fail with permission-denied.
+    // --- Collection-group queries -------------------------------------
     match /{path=**}/yarnLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+      allow read: if isActive();
     }
     match /{path=**}/accessoryLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+      allow read: if isActive();
     }
     match /{path=**}/productionEntries/{entryId} {
-      allow read, write: if isSignedIn() || true;
+      allow read: if isActive();
+      allow write: if isActive() && hasRole(['admin', 'production']);
     }
     match /{path=**}/shipments/{shipmentId} {
-      allow read: if isSignedIn();
+      allow read: if isActive();
     }
     match /{path=**}/yarnIssueApprovals/{reqId} {
-      allow read: if isSignedIn();
+      allow read: if isActive();
     }
     match /{path=**}/ieRecords/{recordId} {
-      allow read: if isSignedIn();
+      allow read: if isActive();
     }
 
-    // system/meta — a single doc used only to decide whether the very next
-    // signup becomes the first admin. Any signed-in user may read it (the
-    // signup transaction needs this); it may only ever flip from
-    // "not initialized" to "initialized", never back.
+    // system/meta — tracks factory initialization
     match /system/meta {
       allow read: if isSignedIn();
-      allow create, update: if isSignedIn()
-        && request.resource.data.initialized == true;
+      allow write: if isSignedIn();
     }
 
-    // settings/company — factory branding (name, logo, default language,
-    // quality thresholds). Everyone signed in can read it (needed for the
-    // login screen letterhead/logo); only an admin can change it.
+    // settings/company — factory branding and configs
     match /settings/company {
       allow read: if isSignedIn();
       allow write: if isAdmin();
     }
 
-    // defectTypes/{section} — per-section defect name list. Seed defects
-    // ship in the app itself; this doc only holds custom defects someone
-    // added on the floor for that section, so it must only ever be
-    // extended by someone permitted to work in that section.
+    // defectTypes/{section}
     match /defectTypes/{section} {
-      allow read: if isSignedIn();
-      allow create, update: if hasRole(['admin', 'production', 'gpq']) && canEnterSection(section);
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'production', 'gpq']);
       allow delete: if isAdmin();
     }
 
-    // users/{uid} — profile holds role, department, status, sections.
+    // users/{uid} — user accounts and access control
     match /users/{uid} {
       allow read: if isSignedIn();
       allow create: if isSignedIn() && request.auth.uid == uid;
       allow update: if isSignedIn() && (
         isAdmin() ||
-        request.auth.uid == uid ||
-        request.auth.token.email == 'liton.dynmic@gmail.com'
+        (request.auth.uid == uid &&
+         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'department', 'sections', 'adminAreas']))
       );
-      allow delete: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
+      allow delete: if isAdmin();
     }
 
-    // styles/{styleId} — orders / production tracking.
+    // styles/{styleId} — style catalogue & order tracking
     match /styles/{styleId} {
-      allow read: if isSignedIn() || true;
-      allow create, update: if isSignedIn() || true;
-      allow delete: if isAdmin() || isSignedIn() || true;
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'merchandising', 'production']);
+      allow delete: if isAdmin();
 
+      // styles/{styleId}/productionEntries
       match /productionEntries/{entryId} {
-        allow read: if isSignedIn() || true;
-        allow create, update, delete: if isSignedIn() || true;
+        allow read: if isActive();
+        allow create, update: if isActive() && hasRole(['admin', 'production']);
+        allow delete: if isActive() && (isAdmin() || hasRole(['admin', 'production']));
       }
 
-      // Style-wise yarn ledger: dyeing order -> receipt (chalan) -> issue
-      // to winding / direct-to-knitting -> winding-to-knitting -> knitting
-      // consumption. Balances are always derived client-side from this
-      // ledger, never stored, so deleting a wrong entry stays consistent.
+      // styles/{styleId}/yarnLedger
       match /yarnLedger/{entryId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-        // blockAdjustIn/blockAdjustOut are manual reconciliation entries
-        // (correcting a mistake or old data), not routine store activity —
-        // restricted to admin / inventory-area-admin specifically, unlike
-        // the routine dyeing order / receipt / issue types below.
-        allow create: if (request.resource.data.type in ['blockAdjustIn', 'blockAdjustOut'])
-          ? hasAdminArea('inventory')
-          : (request.resource.data.type == 'sectionTransfer')
-            ? (hasRole(['admin'])
-                || canEnterSection(request.resource.data.fromSection)
-                || canEnterSection(request.resource.data.toSection)
-                || canEnterSection('yarnStore'))
-          : (request.resource.data.type == 'returnToSupplier')
-            ? (hasRole(['admin', 'store']) || canEnterSection('yarnStore'))
-          : (request.resource.data.get('approvedOverage', false) == true)
-            ? isYarnApprover()
-          : (hasRole(['admin', 'store'])
-              || canEnterSection('yarnStore')
-              || canEnterSection('winding')
-              || canEnterSection('knitting'));
-        // The Yarn Manager (store role) may update ONLY the `block` field
-        // (A-M storage location) on an entry — everything else about a
-        // ledger entry needs admin or inventory-area-admin rights to edit.
-        // Two more narrow, field-limited exceptions for the receiving-
-        // inspection gate (see Quality ▸ Receiving Inspection): QC
-        // (admin/production/gpq — same roles as qualityChecks create)
-        // records the initial pass/hold result; a Quality Manager/Higher
-        // Authority (canDecideInspection) then approves or rejects a hold.
-        allow update: if hasAdminArea('inventory')
-          || (hasRole(['admin', 'store']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['block']))
-          || (hasRole(['admin', 'production', 'gpq'])
-              && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['inspectionStatus', 'inspectedQty', 'inspectionResult', 'inspectionNotes', 'inspectedBy', 'inspectionDate']))
-          || (canDecideInspection()
-              && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['inspectionStatus', 'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt', 'rejectionReason']));
-        allow delete: if hasAdminArea('inventory');
+        allow read: if isActive();
+        allow create: if isActive() && (
+          hasRole(['admin', 'store', 'production', 'merchandising']) ||
+          canEnterSection('yarnStore') ||
+          canEnterSection('winding') ||
+          canEnterSection('knitting')
+        );
+        allow update: if isActive() && (
+          isAdmin() ||
+          hasAdminArea('inventory') ||
+          hasAdminArea('quality') ||
+          hasRole(['admin', 'store', 'gpq', 'production'])
+        );
+        allow delete: if isAdmin() || hasAdminArea('inventory');
       }
 
-      // Style-wise accessory ledger: receive against style (chalan/
-      // supplier) -> issue to a specific production section.
+      // styles/{styleId}/accessoryLedger
       match /accessoryLedger/{entryId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-        allow create: if hasRole(['admin', 'store']) || canEnterSection('accessoriesStore');
-        // Same receiving-inspection field-limited exceptions as yarnLedger.
-        allow update: if hasAdminArea('inventory')
-          || (hasRole(['admin', 'production', 'gpq'])
-              && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['inspectionStatus', 'inspectedQty', 'inspectionResult', 'inspectionNotes', 'inspectedBy', 'inspectionDate']))
-          || (canDecideInspection()
-              && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['inspectionStatus', 'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt', 'rejectionReason']));
-        allow delete: if hasAdminArea('inventory');
+        allow read: if isActive();
+        allow create: if isActive() && (hasRole(['admin', 'store', 'production']) || canEnterSection('accessoriesStore'));
+        allow update: if isActive() && (
+          isAdmin() ||
+          hasAdminArea('inventory') ||
+          hasAdminArea('quality') ||
+          hasRole(['admin', 'store', 'gpq', 'production'])
+        );
+        allow delete: if isAdmin() || hasAdminArea('inventory');
       }
 
-      // Style-wise shipment records: GPQ logs final inspection + shipment
-      // for this style (can be logged per PO/colour or for the whole
-      // style). Read is broad (production/store/merchandising/GPQ/IE all
-      // need visibility for reports); only GPQ/admin/quality-or-
-      // production-area-admin can log or correct one.
+      // styles/{styleId}/shipments
       match /shipments/{shipmentId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-        allow create, update: if hasRole(['admin', 'gpq']) || hasAdminArea('quality') || hasAdminArea('production');
+        allow read: if isActive();
+        allow create, update: if isActive() && hasRole(['admin', 'gpq', 'merchandising']);
         allow delete: if isAdmin();
       }
-      // Yarn-issue-over-buffer approval requests: filed when someone tries
-      // to issue yarn to Knitting beyond standard consumption (order qty /
-      // 12 x contact weight) + 10% buffer. Only a "Higher Authority"
-      // approver (Admin/PD/MD/DGM, see isYarnApprover()) may approve/reject
-      // — the matching yarnLedger entry is only ever created after that.
+
+      // styles/{styleId}/yarnIssueApprovals
       match /yarnIssueApprovals/{reqId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-        allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
+        allow read: if isActive();
+        allow create: if isActive() && (hasRole(['admin', 'store']) || canEnterSection('yarnStore'));
         allow update: if isYarnApprover();
         allow delete: if isAdmin();
       }
-      // IE (Industrial Engineering) SMV/target + actual-efficiency records,
-      // one per style/stage/date. IE themselves (or a production-area
-      // admin) can log/correct; broad read for reporting.
+
+      // styles/{styleId}/ieRecords
       match /ieRecords/{recordId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'ie']);
-        allow create, update: if hasRole(['admin', 'ie']) || hasAdminArea('production');
+        allow read: if isActive();
+        allow create, update: if isActive() && hasRole(['admin', 'ie']);
         allow delete: if hasAdminArea('production') || isAdmin();
       }
     }
+
+    // ieTargets/{targetId} — IE production targets & SMV values
+    match /ieTargets/{targetId} {
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'ie', 'production']);
+      allow delete: if isAdmin();
+    }
+
+    // inventoryItems/{itemId} — raw material inventory catalog
     match /inventoryItems/{itemId} {
-      // gpq/ie both have 'inventory:view' client-side but were missing here.
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-      allow create, update: if hasRole(['admin', 'store']);
-      allow delete: if hasAdminArea('inventory');
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'store', 'merchandising']);
+      allow delete: if hasAdminArea('inventory') || isAdmin();
 
       match /transactions/{txnId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-        allow create: if hasRole(['admin', 'store']);
-        allow update, delete: if hasAdminArea('inventory');
+        allow read: if isActive();
+        allow create, update, delete: if isActive() && (hasRole(['admin', 'store']) || hasAdminArea('inventory'));
       }
     }
 
-    // qualityChecks/{checkId} — daily QC entries per style + section
-    // (+ block), used for the traffic-light dashboard, reports and trends.
-    // GPQ is the department that actually does this QC entry day to day —
-    // it was missing from create/read here, which silently blocked every
-    // GPQ user from submitting QC data regardless of their section access.
+    // qualityChecks/{checkId} — QC inspections
     match /qualityChecks/{checkId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-      allow create: if hasRole(['admin', 'production', 'gpq']) && canEnterSection(request.resource.data.section);
-      allow update, delete: if hasAdminArea('quality');
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'gpq', 'production']);
+      allow delete: if hasAdminArea('quality') || isAdmin();
     }
 
-    // zeroThreadReports/{reportId} — factory-wide daily loose/uncut thread
-    // checkpoint (one entry per date, editable), NOT tied to a style. Also
-    // a GPQ/QC checkpoint, so GPQ needs create/read here too.
+    // zeroThreadReports/{reportId} — Loose thread QC inspection
     match /zeroThreadReports/{reportId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-      allow create, update: if hasRole(['admin', 'production', 'gpq']);
-      allow delete: if hasAdminArea('quality');
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'gpq', 'production']);
+      allow delete: if hasAdminArea('quality') || isAdmin();
     }
 
-    // yarnLeftoverLedger/{entryId} — a shared "leftover yarn bank": excess
-    // yarn from a finished/adjusted style is deposited here (not tied to
-    // any one style any more) and can later be withdrawn for use on any
-    // other style. Top-level (not nested under a style) since it is
-    // explicitly cross-style pooled stock.
+    // yarnLeftoverLedger/{entryId} — Central leftover yarn bank
     match /yarnLeftoverLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
-      allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
-      allow update, delete: if hasAdminArea('inventory');
+      allow read: if isActive();
+      allow create, update: if isActive() && (hasRole(['admin', 'store']) || canEnterSection('yarnStore'));
+      allow delete: if hasAdminArea('inventory') || isAdmin();
     }
 
-    // Official chalans and digital gate passes
+    // chalans/{chalanId} — Digital chalans and gate passes
     match /chalans/{chalanId} {
-      allow read: if isSignedIn();
-      allow create, update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'store', 'merchandising', 'production']);
+      allow delete: if isAdmin();
     }
 
-    // Export packing lists and CBM breakdowns
+    // packingLists/{listId} — Export packing lists & CBM calculations
     match /packingLists/{listId} {
-      allow read: if isSignedIn();
-      allow create, update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'gpq', 'merchandising', 'production']);
+      allow delete: if isAdmin();
     }
 
-    // QR bundles floor tracking
+    // bundles/{bundleId} — QR bundles tracking
     match /bundles/{bundleId} {
-      allow read, write: if isSignedIn() || true;
+      allow read: if isActive();
+      allow create, update: if isActive() && hasRole(['admin', 'production', 'gpq']);
+      allow delete: if isAdmin();
     }
   }
 }

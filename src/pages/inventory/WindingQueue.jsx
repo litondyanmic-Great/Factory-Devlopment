@@ -31,6 +31,7 @@ import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Pill, Modal, S
 import ExportBar from '../../components/ExportBar';
 import { WINDING_SECTION, STAGES, canEnterSection, BLOCKS } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
+import { getLocalYarnLedger, saveLocalYarnLedger } from '../../lib/demoData';
 
 const LOCAL_STORAGE_KEY = 'factory_erp_winding_custom_ledger';
 
@@ -198,7 +199,14 @@ export default function WindingQueue() {
         q,
         (snap) => {
           const list = snap.docs
-            .map((d) => ({ id: d.id, styleId: d.ref?.parent?.parent?.id, ...d.data() }))
+            .map((d) => {
+              const data = d.data();
+              return {
+                ...data,
+                id: d.id,
+                styleId: data.styleId || d.ref?.parent?.parent?.id,
+              };
+            })
             .filter(
               (e) =>
                 e.type === 'issueToWinding' ||
@@ -494,10 +502,13 @@ export default function WindingQueue() {
     setIsBusy(true);
     const row = issueModalRow;
     const dest = issueForm.destination;
+    const targetStyleId = (row.styleId && row.styleId !== 'general')
+      ? row.styleId
+      : (row.styleNo ? getLocalStyles().find((s) => s.styleNo === row.styleNo)?.id : '') || row.styleId || '';
 
     const newRecord = {
       id: `wind-issue-${Date.now()}`,
-      styleId: row.styleId,
+      styleId: targetStyleId,
       styleNo: row.styleNo,
       styleLabel: row.styleLabel,
       yarnItemId: row.yarnItemId,
@@ -519,11 +530,12 @@ export default function WindingQueue() {
     };
 
     try {
-      // 1. Try saving to Firestore if available
-      if (row.styleId && !row.styleId.startsWith('style-demo-')) {
+      // 1. Try saving to Firestore if styleId is present
+      if (targetStyleId && targetStyleId !== 'general') {
         try {
-          await addDoc(collection(db, 'styles', row.styleId, 'yarnLedger'), {
+          await addDoc(collection(db, 'styles', targetStyleId, 'yarnLedger'), {
             type: newRecord.type,
+            styleId: targetStyleId,
             destination: dest,
             destinationSection: dest,
             fromSection: 'winding',
@@ -547,10 +559,15 @@ export default function WindingQueue() {
         }
       }
 
-      // 2. Save in local state and cache
+      // 2. Save in winding entries AND central style-scoped yarn ledger
       const updatedList = [newRecord, ...(entries || [])];
       setEntries(updatedList);
       saveLocalWindingEntries(updatedList);
+
+      try {
+        const localYarn = getLocalYarnLedger();
+        saveLocalYarnLedger([newRecord, ...localYarn]);
+      } catch {}
 
       const destLabel = DESTINATION_SECTIONS.find((d) => d.key === dest)?.label || dest;
       setSuccessMsg(

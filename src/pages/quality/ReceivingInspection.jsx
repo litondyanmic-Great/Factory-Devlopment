@@ -7,6 +7,13 @@ import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal, Inspect
 import ExportBar from '../../components/ExportBar';
 import { can, canDecideInspectionHold } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
+import {
+  getLocalStyles,
+  getLocalYarnLedger,
+  saveLocalYarnLedger,
+  getLocalAccLedger,
+  saveLocalAccLedger,
+} from '../../lib/demoData';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -43,6 +50,7 @@ export default function ReceivingInspection() {
   const [inspecting, setInspecting] = useState(null);
   const [buyerFilter, setBuyerFilter] = useState('all');
   const [busyId, setBusyId] = useState('');
+  const [successNotice, setSuccessNotice] = useState('');
 
   const canInspect = can(profile?.role, 'quality:entry');
   const canDecide = canDecideInspectionHold(profile);
@@ -51,18 +59,13 @@ export default function ReceivingInspection() {
   useEffect(() => {
     const col = collectionGroup(db, cfg.collectionName);
     const unsubPending = onSnapshot(query(col, where('inspectionStatus', '==', 'pending')), (snap) =>
-      setPending(snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() })))
+      setPending(snap.docs.map((d) => ({ ...d.data(), id: d.id, styleId: d.data().styleId || d.ref.parent?.parent?.id, docPath: d.ref.path })))
     );
     const unsubHold = onSnapshot(query(col, where('inspectionStatus', '==', 'hold')), (snap) =>
-      setOnHold(snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() })))
+      setOnHold(snap.docs.map((d) => ({ ...d.data(), id: d.id, styleId: d.data().styleId || d.ref.parent?.parent?.id, docPath: d.ref.path })))
     );
-    // Only equality filters, on purpose — Firestore needs no composite
-    // index for this, unlike combining a where with an orderBy on a
-    // different field. Every 'receipt' entry (and nothing else in this
-    // ledger) always carries an inspectionStatus, so filtering on type
-    // alone is enough to isolate exactly the receipts.
     const unsubAll = onSnapshot(query(col, where('type', '==', 'receipt')), (snap) =>
-      setAllReceipts(snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() })))
+      setAllReceipts(snap.docs.map((d) => ({ ...d.data(), id: d.id, styleId: d.data().styleId || d.ref.parent?.parent?.id, docPath: d.ref.path })))
     );
     return () => {
       unsubPending();
@@ -78,28 +81,71 @@ export default function ReceivingInspection() {
 
   async function saveInspection({ entry, checkedQty, hasIssue, note }) {
     setBusyId(entry.id);
-    try {
-      const ref = doc(db, 'styles', entry.styleId, cfg.collectionName, entry.id);
-      if (hasIssue) {
-        await updateDoc(ref, {
+    const resolvedStyleId = entry.styleId || (entry.styleNo ? getLocalStyles().find((s) => s.styleNo === entry.styleNo)?.id : '') || 'general';
+
+    const patch = hasIssue
+      ? {
           inspectionStatus: 'hold',
           inspectedQty: checkedQty,
           inspectionResult: 'issue',
           inspectionNotes: note,
-          inspectedBy: profile?.name || user?.email,
+          inspectedBy: profile?.name || user?.displayName || user?.email || 'Quality Inspector',
           inspectionDate: today(),
-        });
-      } else {
-        await updateDoc(ref, {
+        }
+      : {
           inspectionStatus: 'passed',
           inspectedQty: checkedQty,
           inspectionResult: 'pass',
           inspectionNotes: note || '',
-          inspectedBy: profile?.name || user?.email,
+          inspectedBy: profile?.name || user?.displayName || user?.email || 'Quality Inspector',
           inspectionDate: today(),
-        });
+        };
+
+    try {
+      if (entry.docPath) {
+        try {
+          await updateDoc(doc(db, entry.docPath), patch);
+        } catch (err) {
+          console.warn('Firestore updateDoc path notice:', err);
+        }
+      } else if (resolvedStyleId && resolvedStyleId !== 'general') {
+        try {
+          const ref = doc(db, 'styles', resolvedStyleId, cfg.collectionName, entry.id);
+          await updateDoc(ref, patch);
+        } catch (err) {
+          console.warn('Firestore updateDoc notice:', err);
+        }
       }
+
+      // Sync local ledger
+      try {
+        if (kind === 'yarn') {
+          const localYarn = getLocalYarnLedger();
+          const updated = localYarn.map((e) => (e.id === entry.id ? { ...e, ...patch } : e));
+          saveLocalYarnLedger(updated);
+        } else {
+          const localAcc = getLocalAccLedger();
+          const updated = localAcc.map((e) => (e.id === entry.id ? { ...e, ...patch } : e));
+          saveLocalAccLedger(updated);
+        }
+      } catch {}
+
+      // Optimistically update memory lists
+      setPending((prev) => (prev || []).filter((p) => p.id !== entry.id));
+      if (hasIssue) {
+        setOnHold((prev) => [{ ...entry, ...patch }, ...(prev || [])]);
+      }
+      setAllReceipts((prev) => (prev || []).map((p) => (p.id === entry.id ? { ...p, ...patch } : p)));
+
+      setSuccessNotice(
+        hasIssue
+          ? t('ইন্সপেকশনে ত্রুটি চিহ্নিত হয়েছে — লটটি হোল্ড (Hold)-এ পাঠানো হয়েছে।', 'Issue recorded — lot placed on Hold.')
+          : t('ইন্সপেকশন সফল! লটটি যাচাইপূর্বক স্টকে ব্যবহারের জন্য পাস করা হয়েছে।', 'Inspection passed! Lot verified and approved for production.')
+      );
       setInspecting(null);
+      setTimeout(() => setSuccessNotice(''), 4500);
+    } catch (e) {
+      console.error('Inspection save error:', e);
     } finally {
       setBusyId('');
     }
@@ -107,22 +153,55 @@ export default function ReceivingInspection() {
 
   async function decideHold(entry, decision, reason) {
     setBusyId(entry.id);
-    try {
-      const ref = doc(db, 'styles', entry.styleId, cfg.collectionName, entry.id);
-      if (decision === 'approve') {
-        await updateDoc(ref, {
+    const resolvedStyleId = entry.styleId || entry.ref?.parent?.parent?.id || (entry.styleNo ? getLocalStyles().find((s) => s.styleNo === entry.styleNo)?.id : '') || 'general';
+
+    const patch = decision === 'approve'
+      ? {
           inspectionStatus: 'approved',
-          approvedBy: profile?.name || user?.email,
-          approvedAt: serverTimestamp(),
-        });
-      } else {
-        await updateDoc(ref, {
+          approvedBy: profile?.name || user?.displayName || user?.email || 'Quality Authority',
+          approvedAt: new Date().toISOString(),
+        }
+      : {
           inspectionStatus: 'rejected',
-          rejectedBy: profile?.name || user?.email,
-          rejectedAt: serverTimestamp(),
+          rejectedBy: profile?.name || user?.displayName || user?.email || 'Quality Authority',
+          rejectedAt: new Date().toISOString(),
           rejectionReason: reason || '',
-        });
+        };
+
+    try {
+      if (resolvedStyleId && resolvedStyleId !== 'general') {
+        try {
+          const ref = doc(db, 'styles', resolvedStyleId, cfg.collectionName, entry.id);
+          await updateDoc(ref, patch);
+        } catch (err) {
+          console.warn('Firestore decideHold notice:', err);
+        }
       }
+
+      // Sync local ledger
+      try {
+        if (kind === 'yarn') {
+          const localYarn = getLocalYarnLedger();
+          const updated = localYarn.map((e) => (e.id === entry.id ? { ...e, ...patch } : e));
+          saveLocalYarnLedger(updated);
+        } else {
+          const localAcc = getLocalAccLedger();
+          const updated = localAcc.map((e) => (e.id === entry.id ? { ...e, ...patch } : e));
+          saveLocalAccLedger(updated);
+        }
+      } catch {}
+
+      setOnHold((prev) => (prev || []).filter((h) => h.id !== entry.id));
+      setAllReceipts((prev) => (prev || []).map((p) => (p.id === entry.id ? { ...p, ...patch } : p)));
+
+      setSuccessNotice(
+        decision === 'approve'
+          ? t('হোল্ড লটটি হায়ার অথরিটি দ্বারা পাস ও অনুমোদন করা হয়েছে।', 'Hold lot approved by Higher Authority.')
+          : t('হোল্ড লটটি রিজেক্ট করা হয়েছে।', 'Hold lot rejected.')
+      );
+      setTimeout(() => setSuccessNotice(''), 4500);
+    } catch (e) {
+      console.error('Decide hold error:', e);
     } finally {
       setBusyId('');
     }
@@ -181,6 +260,13 @@ export default function ReceivingInspection() {
           </button>
         ))}
       </div>
+
+      {successNotice && (
+        <div className="rounded-lg border border-green/40 bg-green/10 p-3.5 text-sm font-semibold text-green flex items-center gap-2 shadow-sm animate-pulse">
+          <Check size={18} />
+          <span>{successNotice}</span>
+        </div>
+      )}
 
       {canDecide && onHold && onHold.length > 0 && (
         <div className="rounded-lg border border-red/30 bg-red-soft/40 p-5">

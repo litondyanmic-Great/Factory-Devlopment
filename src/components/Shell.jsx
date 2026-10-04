@@ -15,7 +15,6 @@ import {
   QrCode,
   FileText,
   Monitor,
-  Scale,
   Package,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -43,7 +42,6 @@ export default function Shell() {
     { to: '/quality/packing-list', label: t('প্যাকিং লিস্ট ও CBM', 'Packing List & CBM'), icon: Package, permission: 'shipment:view' },
     { to: '/ie', label: t('IE', 'IE'), icon: Gauge, permission: 'ie:view' },
     { to: '/reports', label: t('রিপোর্ট', 'Reports'), icon: BarChart3, permission: 'report:view' },
-    { to: '/reports/yarn-wastage', label: t('ইয়ার্ন অপচয় অডিট', 'Yarn Wastage Audit'), icon: Scale, permission: 'report:view' },
     { to: '/tv-board', label: t('ফ্লোর টিভি বোর্ড (Live)', 'Floor TV Board (Live)'), icon: Monitor, permission: null },
     { to: '/admin/users', label: t('ইউজার ম্যানেজমেন্ট', 'User Management'), icon: Users, permission: 'admin:only' },
     { to: '/admin/settings', label: t('সেটিংস', 'Settings'), icon: SettingsIcon, permission: 'admin:only' },

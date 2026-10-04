@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { collection, collectionGroup, getDocs, query, writeBatch } from 'firebase/firestore';
+import { collection, collectionGroup, getDocs, doc, updateDoc, deleteField, query, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { AlertTriangle, Search, Trash2 } from 'lucide-react';
+import { AlertTriangle, Search, Trash2, RefreshCw, CheckCircle2 } from 'lucide-react';
 import { db } from '../../firebase';
 import { btnPrimary, btnDanger, EmptyState } from '../../components/ui';
 import { useLang } from '../../lib/i18n';
+import { STAGES } from '../../lib/constants';
+import { getLocalStyles, saveLocalStyles } from '../../lib/demoData';
 
 const SUBCOLLECTIONS = [
   { key: 'yarnLedger', bn: 'ইয়ার্ন লেজার', en: 'Yarn Ledger' },
@@ -12,15 +14,6 @@ const SUBCOLLECTIONS = [
   { key: 'productionEntries', bn: 'প্রোডাকশন এন্ট্রি', en: 'Production Entries' },
 ];
 
-// Firestore never deletes a subcollection just because its parent
-// document was deleted — so any style that was ever deleted BEFORE the
-// app's own cascade-delete existed (or deleted directly in the Firebase
-// Console, which never cascades) leaves its yarnLedger/accessoryLedger/
-// productionEntries docs behind forever. Those orphaned docs still match
-// every collectionGroup() query the app runs (Winding Queue, Yarn Block
-// Manager, Reports Center, Dashboard), so they keep showing up as if the
-// style still existed. This page finds every such orphan (by checking
-// which styleIds no longer have a parent style doc) and deletes them.
 export default function DataCleanup() {
   const { t } = useLang();
   const [scanning, setScanning] = useState(false);
@@ -29,6 +22,11 @@ export default function DataCleanup() {
   const [deleting, setDeleting] = useState(false);
   const [done, setDone] = useState(0);
   const [error, setError] = useState('');
+
+  // Repair State
+  const [repairing, setRepairing] = useState(false);
+  const [repairedCount, setRepairedCount] = useState(null);
+  const [repairMsg, setRepairMsg] = useState('');
 
   async function handleScan() {
     setScanning(true);
@@ -91,7 +89,79 @@ export default function DataCleanup() {
     }
   }
 
-  // Grouped summary for a quick glance before committing to delete.
+  // Recalculate Stage Totals for all styles
+  async function handleRecalculateStages() {
+    setRepairing(true);
+    setRepairMsg('');
+    setError('');
+    try {
+      const stylesSnap = await getDocs(collection(db, 'styles'));
+      let count = 0;
+      const localList = getLocalStyles();
+      const updatedLocalList = [...localList];
+
+      for (const styleDoc of stylesSnap.docs) {
+        const styleId = styleDoc.id;
+        const styleData = styleDoc.data();
+
+        // Fetch all production entries for this style
+        const entriesSnap = await getDocs(collection(db, 'styles', styleId, 'productionEntries'));
+        const stageSums = {};
+        STAGES.forEach((s) => {
+          stageSums[s.key] = 0;
+        });
+
+        entriesSnap.docs.forEach((ed) => {
+          const e = ed.data();
+          if (e.stage && typeof stageSums[e.stage] === 'number') {
+            stageSums[e.stage] += Number(e.quantity || 0);
+          }
+        });
+
+        // Clean up rogue dotted keys like "stages.knitting"
+        const updatePayload = {
+          stages: stageSums,
+          productionStarted: Object.values(stageSums).some((v) => v > 0),
+          updatedAt: serverTimestamp(),
+        };
+
+        // If doc had corrupted dotted field names at root level, remove them
+        STAGES.forEach((s) => {
+          if (`stages.${s.key}` in styleData) {
+            updatePayload[`stages.${s.key}`] = deleteField();
+          }
+        });
+
+        await updateDoc(doc(db, 'styles', styleId), updatePayload);
+        count++;
+
+        // Update local list too
+        const idx = updatedLocalList.findIndex((s) => s.id === styleId);
+        if (idx !== -1) {
+          updatedLocalList[idx] = {
+            ...updatedLocalList[idx],
+            stages: stageSums,
+            productionStarted: updatePayload.productionStarted,
+          };
+        }
+      }
+
+      saveLocalStyles(updatedLocalList);
+      setRepairedCount(count);
+      setRepairMsg(
+        t(
+          `মোট ${count}টি স্টাইলের প্রতিটি স্টেজের উৎপাদন সংখ্যা বাস্তব এন্ট্রিগুলো থেকে সঠিকভাবে রিক্যালকুলেট ও মেরামত করা হয়েছে!`,
+          `Successfully recalculated and repaired stage progress totals for ${count} styles from real production entries!`
+        )
+      );
+    } catch (err) {
+      console.error('Repair error:', err);
+      setError(t('স্টেজ রিক্যালকুলেট করা যায়নি।', 'Could not recalculate stages.'));
+    } finally {
+      setRepairing(false);
+    }
+  }
+
   const bySub = SUBCOLLECTIONS.map((sub) => ({
     ...sub,
     count: orphans.filter((o) => o.subKey === sub.key).length,
@@ -101,24 +171,59 @@ export default function DataCleanup() {
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-semibold text-ink">{t('ডেটা ক্লিনআপ (Orphan ডেটা)', 'Data Cleanup (Orphaned Data)')}</h1>
+        <h1 className="font-display text-2xl font-semibold text-ink">{t('ডেটা ক্লিনআপ ও মেরামত', 'Data Cleanup & Repair Tools')}</h1>
         <p className="mt-1 text-sm text-ink-soft">
           {t(
-            'ডিলিট হয়ে যাওয়া স্টাইলের কিছু পুরনো ইয়ার্ন/এক্সেসরিজ লেজার বা প্রোডাকশন এন্ট্রি এখনো ডাটাবেজে থেকে গিয়ে থাকতে পারে (স্টাইলটা নেই কিন্তু তার ডেটা রিপোর্ট/ড্যাশবোর্ডে দেখাচ্ছে)। এখানে স্ক্যান করে সেগুলো খুঁজে বের করে পাকাপাকিভাবে মুছে ফেলুন।',
-            "Some yarn/accessory ledger or production entries from deleted styles may still be sitting in the database (the style is gone but its data still shows up in reports/dashboard). Scan here to find and permanently remove them."
+            'সিস্টেমের ডেটাবেস সুস্থতা বজায় রাখার জন্য এই টুলগুলো ব্যবহার করুন — স্টেজ প্রোডাকশন রিক্যালকুলেট করুন অথবা অপ্রয়োজনীয় অরফান ডেটা মুছে ফেলুন।',
+            'Use these maintenance tools to recalculate stage progress from entries or clean up leftover data.'
           )}
         </p>
       </div>
 
+      {/* Recalculate Stage Totals Tool */}
+      <div className="rounded-lg border border-line bg-surface p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="font-display text-base font-semibold text-ink flex items-center gap-2">
+              <RefreshCw size={18} className="text-indigo" />
+              {t('স্টাইলের স্টেজ প্রগ্রেস রিক্যালকুলেট ও মেরামত করুন', 'Recalculate & Repair Style Stage Totals')}
+            </h2>
+            <p className="mt-1 text-xs text-ink-soft">
+              {t(
+                'যদি কোনো স্টাইলে প্রোডাকশন এন্ট্রি যোগ/বিয়োগ করার পর ড্যাশবোর্ড বা স্টাইল লিস্টে মোট সংখ্যার গরমিল দেখা যায়, তবে এই বাটনে চাপ দিন। সিস্টেম প্রতিটি স্টাইলের প্রতিটি স্টেজের আসল এন্ট্রিগুলো পুনরায় যোগ করে শতভাগ নির্ভুল করে দিবে।',
+                'Recalculates every stage count directly from actual production entry documents to fix any desync.'
+              )}
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={repairing}
+            onClick={handleRecalculateStages}
+            className={`${btnPrimary} shrink-0 flex items-center gap-1.5 !text-xs`}
+          >
+            <RefreshCw size={14} className={repairing ? 'animate-spin' : ''} />
+            {repairing ? t('মেরামত হচ্ছে…', 'Repairing…') : t('রিক্যালকুলেট করুন', 'Recalculate Stages')}
+          </button>
+        </div>
+
+        {repairMsg && (
+          <div className="flex items-center gap-2 rounded-lg bg-green/10 p-3 text-xs font-semibold text-green">
+            <CheckCircle2 size={16} />
+            {repairMsg}
+          </div>
+        )}
+      </div>
+
+      {/* Orphan Cleanup Tool */}
       <div className="rounded-lg border border-amber bg-amber-soft/30 p-4 text-sm text-ink">
         <p className="flex items-center gap-2 font-medium">
           <AlertTriangle size={16} className="text-amber" />
-          {t('এটা শুধু তখনই দরকার', 'This is only needed for')}
+          {t('অরফান (Orphaned) ডেটা মোছা', 'Orphaned Data Cleanup')}
         </p>
-        <p className="mt-1 text-ink-soft">
+        <p className="mt-1 text-xs text-ink-soft">
           {t(
-            'যেসব স্টাইল খুব আগে (এই অ্যাপের নিজস্ব cascade-delete চালু হওয়ার আগে) মুছে ফেলা হয়েছিল, অথবা সরাসরি Firebase Console থেকে মোছা হয়েছিল। এখন থেকে অ্যাপের মধ্যে থেকে স্টাইল মুছলে এই সমস্যা হবে না — সব সাব-কালেকশন স্বয়ংক্রিয়ভাবে মুছে যায়।',
-            "styles that were deleted a while ago (before this app had its own cascade-delete), or deleted directly from the Firebase Console. Deleting a style from within the app now already cleans up everything automatically."
+            'ডিলিট হয়ে যাওয়া পুরনো স্টাইলের কোনো অবশিষ্ট সাব-কালেকশন থেকে থাকলে সেগুলো খুঁজে মুছে ফেলুন।',
+            'Find and permanently remove leftover subcollections from deleted styles.'
           )}
         </p>
       </div>

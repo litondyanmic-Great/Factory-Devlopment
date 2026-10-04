@@ -20,6 +20,9 @@ export default function NewStyle() {
     buyer: '',
     styleName: '',
     styleNo: '',
+    orderQty: '',
+    colour: '',
+    poNo: '',
     gg: '',
     shipDate: '',
     yarnComposition: '',
@@ -29,6 +32,7 @@ export default function NewStyle() {
   const [imageDataUrl, setImageDataUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
 
   function update(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -48,46 +52,68 @@ export default function NewStyle() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
-    const cleanPos = pos
+    setSuccessMsg('');
+
+    if (!form.styleNo.trim() || !form.buyer.trim()) {
+      setError(t('বায়ার এবং স্টাইল নম্বর আবশ্যক।', 'Buyer and Style Number are required.'));
+      return;
+    }
+
+    // Process POs
+    let cleanPos = pos
       .map((po) => ({
-        poNo: po.poNo.trim(),
-        colours: po.colours
-          .map((c) => ({ colour: c.colour.trim(), qty: Number(c.qty) || 0 }))
+        poNo: (po.poNo || '').trim(),
+        colours: (po.colours || [])
+          .map((c) => ({ colour: (c.colour || '').trim(), qty: Number(c.qty) || 0 }))
           .filter((c) => c.colour && c.qty > 0),
       }))
       .filter((po) => po.poNo && po.colours.length > 0);
-    const summary = posSummary(cleanPos);
-    if (!form.styleNo || !form.buyer || cleanPos.length === 0 || summary.orderQty <= 0) {
+
+    let summary = posSummary(cleanPos);
+    let totalQty = summary.orderQty;
+
+    // Fallback if user filled direct Order Qty field instead of multi-PO
+    const directQty = Number(form.orderQty) || 0;
+    if (totalQty <= 0 && directQty > 0) {
+      totalQty = directQty;
+      const defaultPoNo = form.poNo.trim() || `PO-${form.styleNo.replace(/[^a-zA-Z0-9]/g, '')}`;
+      const defaultCol = form.colour.trim() || 'Standard';
+      cleanPos = [{ poNo: defaultPoNo, colours: [{ colour: defaultCol, qty: directQty }] }];
+      summary = { poNo: defaultPoNo, colour: defaultCol, orderQty: directQty };
+    }
+
+    if (totalQty <= 0) {
       setError(
         t(
-          'স্টাইল নম্বর, বায়ার এবং অন্তত একটি PO-তে কালার-ওয়াইজ কোয়ান্টিটি আবশ্যক।',
-          'Style number, buyer, and at least one PO with colour-wise quantity are required.'
+          'অর্ডার কোয়ান্টিটি দিন (সরাসরি কোয়ান্টিটি ফিল্ডে অথবা PO ও কালার-ওয়াইজ বক্সে)।',
+          'Please enter Order Quantity (either in the Order Quantity field or via PO & Colour rows).'
         )
       );
       return;
     }
+
     setBusy(true);
 
     const generatedId = `style-${Date.now()}`;
     const newStyleData = {
       id: generatedId,
       orderDate: form.orderDate || null,
-      buyer: form.buyer,
+      buyer: form.buyer.trim(),
       pos: cleanPos,
-      poNo: summary.poNo,
-      styleName: form.styleName || '',
-      styleNo: form.styleNo,
-      gg: form.gg || '',
+      poNo: summary.poNo || form.poNo.trim() || '',
+      styleName: form.styleName.trim() || '',
+      styleNo: form.styleNo.trim(),
+      gg: form.gg.trim() || '',
       shipDate: form.shipDate || null,
-      colour: summary.colour,
-      yarnComposition: form.yarnComposition || '',
-      orderQty: summary.orderQty,
+      colour: summary.colour || form.colour.trim() || '',
+      yarnComposition: form.yarnComposition.trim() || '',
+      orderQty: totalQty,
       notes: form.notes || '',
       imageUrl: imageDataUrl || '',
       stages: emptyStageMap(0),
       productionStarted: false,
       createdAt: new Date().toISOString(),
-      createdBy: profile?.name || user?.email || 'Admin',
+      createdBy: profile?.name || user?.displayName || user?.email || 'Admin',
     };
 
     try {
@@ -106,10 +132,13 @@ export default function NewStyle() {
       const currentList = getLocalStyles();
       saveLocalStyles([{ ...newStyleData, id: finalId }, ...currentList]);
 
-      navigate(`/production/${finalId}`);
+      setSuccessMsg(t('স্টাইল সফলভাবে তৈরি ও সংরক্ষিত হয়েছে!', 'Style created and saved successfully!'));
+      setTimeout(() => {
+        navigate(`/production/${finalId}`);
+      }, 700);
     } catch (err) {
+      console.error('Create style error:', err);
       setError(t('স্টাইল তৈরি করা যায়নি, আবার চেষ্টা করুন।', 'Could not create style, please try again.'));
-    } finally {
       setBusy(false);
     }
   }
@@ -172,6 +201,24 @@ export default function NewStyle() {
               onChange={(e) => update('shipDate', e.target.value)}
             />
           </Field>
+          <Field label={t('মোট অর্ডার কোয়ান্টিটি (পিস)', 'Total Order Quantity (Pcs)')}>
+            <input
+              type="number"
+              min="1"
+              placeholder="e.g. 5000"
+              className={inputClass}
+              value={form.orderQty}
+              onChange={(e) => update('orderQty', e.target.value)}
+            />
+          </Field>
+          <Field label={t('মূল রঙ (যদি থাকে)', 'Primary Colour (Optional)')}>
+            <input
+              placeholder="e.g. Navy Blue / Black"
+              className={inputClass}
+              value={form.colour}
+              onChange={(e) => update('colour', e.target.value)}
+            />
+          </Field>
           <Field label={t('ইয়ার্ন কম্পোজিশন', 'Yarn Composition')}>
             <input
               className={inputClass}
@@ -193,11 +240,16 @@ export default function NewStyle() {
           />
         </Field>
 
-        {error && <p className="text-sm text-red">{error}</p>}
+        {error && <p className="text-sm font-medium text-red bg-red-soft/30 p-2.5 rounded-lg border border-red/20">{error}</p>}
+        {successMsg && (
+          <p className="text-sm font-medium text-green bg-green/10 p-2.5 rounded-lg border border-green/30 flex items-center gap-2">
+            <span>✓</span> {successMsg}
+          </p>
+        )}
 
         <div className="flex gap-3">
           <button type="submit" disabled={busy} className={btnPrimary}>
-            {busy ? t('তৈরি হচ্ছে…', 'Creating…') : t('স্টাইল তৈরি করুন', 'Create Style')}
+            {busy ? t('সংরক্ষণ হচ্ছে…', 'Saving…') : t('স্টাইল তৈরি করুন', 'Create Style')}
           </button>
           <button type="button" className={btnSecondary} onClick={() => navigate(-1)}>
             {t('বাতিল', 'Cancel')}

@@ -176,9 +176,6 @@ export default function InventoryList() {
           <Link to="/inventory/yarn-blocks" className={btnSecondary}>
             <MapPin size={16} /> {t('ইয়ার্ন ব্লক', 'Yarn Blocks')}
           </Link>
-          <Link to="/inventory/yarn-leftover" className={btnSecondary}>
-            <PiggyBank size={16} /> {t('ল্যাপটোভার ব্যাংক', 'Leftover Bank')}
-          </Link>
           {can(profile?.role, 'inventory:manage') && (
             <Link to="/inventory/new" className={btnPrimary}>
               <Plus size={16} /> {t('নতুন আইটেম', 'New Item')}

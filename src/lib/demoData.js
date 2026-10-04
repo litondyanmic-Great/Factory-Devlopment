@@ -563,52 +563,7 @@ export const DEFAULT_SAMPLE_IE_RECORDS = [
   },
 ];
 
-export const DEFAULT_SAMPLE_PACKING_LISTS = [
-  {
-    id: 'pack-hm-01',
-    styleNo: 'HM-2026/SW-01',
-    styleName: "Men's Crew Neck Pullover",
-    buyer: 'H&M Hennes & Mauritz GBC AB',
-    poNo: 'PO-994821',
-    invoiceNo: 'INV-2026-EXP-088',
-    destination: 'Hamburg Port, Germany',
-    countryOfOrigin: 'Bangladesh',
-    cartonLengthCm: 60,
-    cartonWidthCm: 40,
-    cartonHeightCm: 30,
-    cartonNetWeightKg: 12.0,
-    cartonGrossWeightKg: 13.5,
-    sizes: ['XS', 'S', 'M', 'L', 'XL', 'XXL'],
-    updatedAt: '2026-09-29T10:00:00.000Z',
-    rows: [
-      { id: 1, ctnFrom: 1, ctnTo: 20, color: 'Navy Blue', sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 }, pcsPerCtn: 30 },
-      { id: 2, ctnFrom: 21, ctnTo: 45, color: 'Navy Blue', sizeRatios: { XS: 0, S: 6, M: 12, L: 8, XL: 4, XXL: 0 }, pcsPerCtn: 30 },
-      { id: 3, ctnFrom: 46, ctnTo: 70, color: 'Heather Grey', sizeRatios: { XS: 4, S: 8, M: 10, L: 6, XL: 2, XXL: 0 }, pcsPerCtn: 30 },
-      { id: 4, ctnFrom: 71, ctnTo: 90, color: 'Heather Grey', sizeRatios: { XS: 0, S: 5, M: 10, L: 10, XL: 5, XXL: 0 }, pcsPerCtn: 30 },
-    ],
-  },
-  {
-    id: 'pack-zr-02',
-    styleNo: 'ZR-2026/CD-04',
-    styleName: "Women's Cable Knit Cardigan",
-    buyer: 'Zara Inditex Group',
-    poNo: 'PO-881240',
-    invoiceNo: 'INV-2026-EXP-092',
-    destination: 'Barcelona Port, Spain',
-    countryOfOrigin: 'Bangladesh',
-    cartonLengthCm: 55,
-    cartonWidthCm: 38,
-    cartonHeightCm: 32,
-    cartonNetWeightKg: 11.5,
-    cartonGrossWeightKg: 13.0,
-    sizes: ['S', 'M', 'L', 'XL'],
-    updatedAt: '2026-09-29T14:30:00.000Z',
-    rows: [
-      { id: 1, ctnFrom: 1, ctnTo: 30, color: 'Ivory Cream', sizeRatios: { S: 6, M: 12, L: 8, XL: 4 }, pcsPerCtn: 30 },
-      { id: 2, ctnFrom: 31, ctnTo: 60, color: 'Sage Green', sizeRatios: { S: 5, M: 10, L: 10, XL: 5 }, pcsPerCtn: 30 },
-    ],
-  },
-];
+export const DEFAULT_SAMPLE_PACKING_LISTS = [];
 
 export function isDemoDataCleared() {
   try {
@@ -847,10 +802,15 @@ export function saveLocalAccLedger(data) {
 export function getLocalPackingLists() {
   try {
     const raw = localStorage.getItem('factory_erp_local_packing_lists');
-    if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
+    if (raw !== null) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list)) {
+        return list.filter((p) => p && p.id !== 'pack-hm-01' && p.id !== 'pack-zr-02' && p.id !== 'demo-pack-01');
+      }
+      return [];
+    }
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_PACKING_LISTS;
+  return [];
 }
 
 export function saveLocalPackingLists(lists) {

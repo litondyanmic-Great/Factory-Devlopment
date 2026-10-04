@@ -66,6 +66,13 @@ export default function YarnBlockManager() {
     setBusyId(entry.ref.path);
     try {
       await updateDoc(doc(db, entry.ref.path), { block });
+      try {
+        const local = getLocalYarnLedger();
+        const updated = local.map((x) => (x.id === entry.id ? { ...x, block } : x));
+        saveLocalYarnLedger(updated);
+      } catch {}
+    } catch (e) {
+      console.warn('Assign block error:', e);
     } finally {
       setBusyId('');
     }

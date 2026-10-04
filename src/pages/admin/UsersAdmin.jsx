@@ -27,15 +27,18 @@ export default function UsersAdmin() {
   useEffect(() => {
     let unsub = () => {};
     try {
-      const q = query(collection(db, 'users'), orderBy('createdAt', 'desc'));
+      const q = collection(db, 'users');
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setUsers(list);
-            saveLocalUsers(list);
-          }
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          list.sort((a, b) => {
+            const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+            const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+            return timeB - timeA;
+          });
+          setUsers(list);
+          saveLocalUsers(list);
         },
         () => {}
       );
@@ -45,17 +48,31 @@ export default function UsersAdmin() {
 
   async function setRole(id, role) {
     const isPending = role === 'pending';
-    await updateDoc(doc(db, 'users', id), {
+    const patch = {
       role,
       status: isPending ? 'pending' : 'active',
       department: isPending ? null : role,
-    });
+    };
+    try {
+      await updateDoc(doc(db, 'users', id), patch);
+    } catch (e) {
+      console.warn('Update user doc warning:', e);
+    }
+    const updated = users.map((u) => (u.id === id ? { ...u, ...patch } : u));
+    setUsers(updated);
+    saveLocalUsers(updated);
   }
 
   async function toggleActive(id, currentStatus) {
-    await updateDoc(doc(db, 'users', id), {
-      status: currentStatus === 'active' ? 'disabled' : 'active',
-    });
+    const nextStatus = currentStatus === 'active' ? 'disabled' : 'active';
+    try {
+      await updateDoc(doc(db, 'users', id), { status: nextStatus });
+    } catch (e) {
+      console.warn('Toggle user active warning:', e);
+    }
+    const updated = users.map((u) => (u.id === id ? { ...u, status: nextStatus } : u));
+    setUsers(updated);
+    saveLocalUsers(updated);
   }
 
   async function toggleSection(u, sectionKey) {
@@ -87,10 +104,12 @@ export default function UsersAdmin() {
     await deleteDoc(doc(db, 'users', u.id));
   }
 
+  const pendingUsers = (users || []).filter((u) => u.status === 'pending' || u.role === 'pending');
+
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-semibold text-ink">{t('ইউজার ম্যানেজমেন্ট', 'User Management')}</h1>
+        <h1 className="font-display text-2xl font-semibold text-ink">{t('ইউজার ম্যানেজমেন্ট ও অ্যাক্সেস কন্ট্রোল', 'User Management & Access Control')}</h1>
         <p className="mt-1 text-sm text-ink-soft">
           {t(
             'নতুন অ্যাকাউন্ট অনুমোদন করুন, ডিপার্টমেন্ট এবং নির্দিষ্ট সেকশন (যেমন শুধু নিটিং, বা শুধু ওয়াশ) নির্ধারণ করুন — যাকে যে সেকশন দেওয়া হবে সে শুধু সেই সেকশনেই এন্ট্রি দিতে পারবে।',
@@ -98,6 +117,81 @@ export default function UsersAdmin() {
           )}
         </p>
       </div>
+
+      {pendingUsers.length > 0 && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4 sm:p-5 shadow-sm space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-white text-xs font-bold">
+                {pendingUsers.length}
+              </span>
+              <h2 className="font-display text-base font-semibold text-ink">
+                {t('অনুমোদনের অপেক্ষায় থাকা নতুন ব্যবহারকারী', 'New Users Awaiting Administrator Approval')}
+              </h2>
+            </div>
+            <span className="text-xs text-ink-soft hidden sm:inline">
+              {t('রোল নির্ধারণ করে এক ক্লিকে অনুমোদন দিন', 'Assign role and click to approve')}
+            </span>
+          </div>
+
+          <div className="space-y-2.5">
+            {pendingUsers.map((pu) => (
+              <div
+                key={pu.id}
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-line bg-surface p-3 shadow-sm"
+              >
+                <div>
+                  <p className="text-sm font-semibold text-ink flex items-center gap-2">
+                    {pu.name}
+                    <span className="rounded bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-600">
+                      {t('অনুমোদন আবশ্যক', 'Approval Required')}
+                    </span>
+                  </p>
+                  <p className="text-xs text-ink-soft">{pu.email}</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs text-ink-soft mr-1">{t('অনুমোদন দিন:', 'Approve as:')}</span>
+                  <button
+                    type="button"
+                    onClick={() => setRole(pu.id, 'production')}
+                    className="rounded bg-indigo/10 px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo hover:text-white transition"
+                  >
+                    {t('প্রোডাকশন', 'Production')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRole(pu.id, 'store')}
+                    className="rounded bg-indigo/10 px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo hover:text-white transition"
+                  >
+                    {t('স্টোর', 'Store')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRole(pu.id, 'gpq')}
+                    className="rounded bg-indigo/10 px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo hover:text-white transition"
+                  >
+                    {t('কোয়ালিটি (GPQ)', 'Quality')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRole(pu.id, 'merchandising')}
+                    className="rounded bg-indigo/10 px-2.5 py-1 text-xs font-medium text-indigo hover:bg-indigo hover:text-white transition"
+                  >
+                    {t('মার্চেন্ডাইজিং', 'Merchandiser')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRole(pu.id, 'admin')}
+                    className="rounded bg-green/10 px-2.5 py-1 text-xs font-medium text-green hover:bg-green hover:text-white transition"
+                  >
+                    {t('অ্যাডমিন', 'Admin')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {users === null ? (
         <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>

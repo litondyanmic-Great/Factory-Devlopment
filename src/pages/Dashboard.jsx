@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, onSnapshot, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { QrCode, FileText, Monitor, Boxes, Scale } from 'lucide-react';
+import { QrCode, FileText, Monitor, Boxes } from 'lucide-react';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { StatCard, ProgressBar, EmptyState, Field, inputClass, TrafficLight } from '../components/ui';
 import ExportBar from '../components/ExportBar';
+import ProductionEfficiencyKpiWidget from '../components/ProductionEfficiencyKpiWidget';
 import { can, FINAL_STAGE_KEY, STAGES, qualityTone } from '../lib/constants';
 import { useLang } from '../lib/i18n';
 import { useSettings } from '../lib/settingsContext';
@@ -28,6 +29,21 @@ export default function Dashboard() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [buyerFilter, setBuyerFilter] = useState('all');
+
+  // Instant reactive sync from local changes across modules/tabs
+  useEffect(() => {
+    function handleUpdate() {
+      setStyles(getLocalStyles());
+      setEntries(getLocalProductionEntries());
+      setChecks(getLocalQualityChecks());
+    }
+    window.addEventListener('factory_erp_data_updated', handleUpdate);
+    window.addEventListener('storage', handleUpdate);
+    return () => {
+      window.removeEventListener('factory_erp_data_updated', handleUpdate);
+      window.removeEventListener('storage', handleUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     let unsub = () => {};
@@ -200,12 +216,19 @@ export default function Dashboard() {
         />
       </div>
 
+      {/* Realtime Production Efficiency KPI Widget using Recharts */}
+      <ProductionEfficiencyKpiWidget
+        entries={entries}
+        styles={styles}
+        selectedDate={to || from}
+      />
+
       {/* Enterprise Factory Quick Modules */}
       <div className="rounded-lg border border-line bg-surface p-4">
         <h2 className="mb-3 font-display text-xs font-semibold uppercase tracking-wider text-ink-soft">
           {t('স্মার্ট ফ্যাক্টরি টুলস (Enterprise Modules)', 'Smart Factory Enterprise Tools')}
         </h2>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Link
             to="/production/bundles"
             className="flex flex-col gap-1.5 rounded-lg border border-line bg-paper p-3 hover:border-indigo transition-all group"
@@ -248,17 +271,6 @@ export default function Dashboard() {
             </div>
             <p className="font-semibold text-xs text-ink">{t('প্যাকিং লিস্ট ও CBM', 'Packing List & CBM')}</p>
             <p className="text-[11px] text-ink-soft">{t('কার্টুন ব্রেকডাউন ও ভলিউম', 'Carton breakdown & vol')}</p>
-          </Link>
-
-          <Link
-            to="/reports/yarn-wastage"
-            className="flex flex-col gap-1.5 rounded-lg border border-line bg-paper p-3 hover:border-indigo transition-all group"
-          >
-            <div className="flex h-8 w-8 items-center justify-center rounded bg-red-soft text-red group-hover:bg-red group-hover:text-white transition-colors">
-              <Scale size={18} />
-            </div>
-            <p className="font-semibold text-xs text-ink">{t('ইয়ার্ন অপচয় অডিট', 'Yarn Wastage Audit')}</p>
-            <p className="text-[11px] text-ink-soft">{t('সুতার ক্ষতি ও কস্টিং বিশ্লেষণ', 'Wastage costing & loss')}</p>
           </Link>
         </div>
       </div>
