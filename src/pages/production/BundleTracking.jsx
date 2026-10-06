@@ -236,7 +236,14 @@ export default function BundleTracking() {
     try {
       const unsub = onSnapshot(collection(db, 'styles'), (snap) => {
         if (!snap.empty) {
-          setStyles(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          const seen = new Set();
+          const unique = list.filter((s) => {
+            if (!s.id || seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          setStyles(unique);
         } else {
           setStyles([
             { id: 'style-hm-01', styleNo: 'HM-2026/SW-01', styleName: "Men's Crew Neck Pullover", buyer: 'H&M' },
@@ -604,9 +611,9 @@ export default function BundleTracking() {
           <div className="rounded-md bg-paper p-3 text-xs">
             <span className="font-medium text-ink-soft">{t('দ্রুত পরীক্ষার জন্য ক্লিক করুন:', 'Quick test click:')} </span>
             <div className="mt-1 flex flex-wrap gap-1.5">
-              {bundles.slice(0, 4).map((b) => (
+              {bundles.slice(0, 4).map((b, idx) => (
                 <button
-                  key={b.id}
+                  key={`${b.id || b.bundleNo || 'demo-b'}-${idx}`}
                   type="button"
                   onClick={() => {
                     setScanInput(b.bundleNo);
@@ -721,9 +728,9 @@ export default function BundleTracking() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 print:grid-cols-2 bundle-cards-grid">
-            {filteredBundles.map((b) => (
+            {filteredBundles.map((b, idx) => (
               <div
-                key={b.id}
+                key={`${b.id || b.bundleNo || 'bundle-card'}-${idx}`}
                 className="relative rounded-lg border-2 border-dashed border-line bg-surface p-4 shadow-sm print:border-black print:p-3"
               >
                 <div className="flex justify-between items-start border-b border-line pb-2 mb-2">
@@ -784,8 +791,8 @@ export default function BundleTracking() {
                 onChange={(e) => setSelectedStyleId(e.target.value)}
               >
                 <option value="">{t('সব স্টাইল', 'All Styles')}</option>
-                {styles.map((s) => (
-                  <option key={s.id} value={s.id}>
+                {styles.map((s, idx) => (
+                  <option key={`${s.id}-${idx}`} value={s.id}>
                     {s.styleNo}
                   </option>
                 ))}
@@ -831,8 +838,8 @@ export default function BundleTracking() {
                 </tr>
               </thead>
               <tbody>
-                {filteredBundles.map((b) => (
-                  <tr key={b.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                {filteredBundles.map((b, idx) => (
+                  <tr key={`${b.id || b.bundleNo || 'bundle-row'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                     <td className="py-3 pr-3 font-mono text-xs font-semibold text-indigo">
                       {b.bundleNo}
                     </td>
@@ -891,8 +898,8 @@ export default function BundleTracking() {
                 onChange={(e) => setGenForm((f) => ({ ...f, styleId: e.target.value }))}
               >
                 <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                {styles.map((s) => (
-                  <option key={s.id} value={s.id}>
+                {styles.map((s, idx) => (
+                  <option key={`${s.id}-${idx}`} value={s.id}>
                     {s.styleNo} — {s.buyer}
                   </option>
                 ))}

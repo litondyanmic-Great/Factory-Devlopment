@@ -345,8 +345,8 @@ export default function ZeroThreadReport() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((r) => (
-                  <tr key={r.id} className="border-b border-line last:border-0">
+                {filtered.map((r, idx) => (
+                  <tr key={`${r.id || 'zt'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{r.date}</td>
                     <td className="py-2 pr-4 text-ink">{stageLabel(r.section || STAGES[0].key, lang)}</td>
                     <td className="py-2 pr-4 text-ink-soft">{r.checkedQty}</td>

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { Search } from 'lucide-react';
 import { db } from '../firebase';
 import { inputClass } from './ui';
@@ -19,15 +19,24 @@ export default function StyleSearchSelect({ value, onChange }) {
   useEffect(() => {
     let unsub = () => {};
     try {
-      const q = query(collection(db, 'styles'), orderBy('createdAt', 'desc'));
+      const q = collection(db, 'styles');
       unsub = onSnapshot(
         q,
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
-          }
+          const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+          list.sort((a, b) => {
+            const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt || 0).getTime();
+            const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt || 0).getTime();
+            return timeB - timeA;
+          });
+          const seen = new Set();
+          const uniqueList = list.filter((s) => {
+            if (!s.id || seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          setStyles(uniqueList);
+          saveLocalStyles(uniqueList);
         },
         () => {}
       );
@@ -68,10 +77,10 @@ export default function StyleSearchSelect({ value, onChange }) {
             {filtered.length === 0 ? (
               <p className="px-3 py-2 text-sm text-ink-soft">{t('কোনো স্টাইল পাওয়া যায়নি', 'No styles found')}</p>
             ) : (
-              filtered.map((s) => (
+              filtered.map((s, idx) => (
                 <button
                   type="button"
-                  key={s.id}
+                  key={`${s.id}-${idx}`}
                   onClick={() => {
                     onChange(s.id, s);
                     setSearch('');

@@ -588,6 +588,7 @@ export function clearAllDemoData() {
     localStorage.setItem('factory_erp_local_ie_records', JSON.stringify([]));
     localStorage.setItem('factory_erp_bundles_data', JSON.stringify([]));
     localStorage.setItem('factory_erp_chalans_data', JSON.stringify([]));
+    localStorage.removeItem('factory_erp_winding_custom_ledger');
     window.dispatchEvent(new Event('factory_erp_data_updated'));
     return true;
   } catch (e) {
@@ -620,15 +621,30 @@ export function restoreDemoData() {
 export function getLocalStyles() {
   try {
     const raw = localStorage.getItem('factory_erp_local_styles');
-    if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
+    if (raw !== null) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const seen = new Set();
+        return parsed.filter((s) => {
+          if (!s || !s.id || seen.has(s.id)) return false;
+          seen.add(s.id);
+          return true;
+        });
+      }
+    }
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_STYLES;
+  return [];
 }
 
 export function saveLocalStyles(styles) {
   try {
-    localStorage.setItem('factory_erp_local_styles', JSON.stringify(styles));
+    const seen = new Set();
+    const unique = (styles || []).filter((s) => {
+      if (!s || !s.id || seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+    localStorage.setItem('factory_erp_local_styles', JSON.stringify(unique));
     window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
 }
@@ -655,9 +671,8 @@ export function getLocalItems() {
   try {
     const raw = localStorage.getItem('factory_erp_local_items');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ITEMS;
+  return [];
 }
 
 export function saveLocalItems(items) {
@@ -683,9 +698,8 @@ export function getLocalUsers() {
   try {
     const raw = localStorage.getItem('factory_erp_local_users');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_USERS;
+  return [];
 }
 
 export function saveLocalUsers(users) {
@@ -699,9 +713,8 @@ export function getLocalProductionEntries() {
   try {
     const raw = localStorage.getItem('factory_erp_local_prod_entries');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_PRODUCTION_ENTRIES;
+  return [];
 }
 
 export function saveLocalProductionEntries(entries) {
@@ -727,9 +740,8 @@ export function getLocalQualityChecks() {
   try {
     const raw = localStorage.getItem('factory_erp_local_quality_checks');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_QUALITY_CHECKS;
+  return [];
 }
 
 export function saveLocalQualityChecks(checks) {
@@ -749,9 +761,8 @@ export function getLocalZeroThread() {
   try {
     const raw = localStorage.getItem('factory_erp_local_zero_thread');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ZERO_THREAD;
+  return [];
 }
 
 export function saveLocalZeroThread(data) {
@@ -765,9 +776,8 @@ export function getLocalYarnLedger() {
   try {
     const raw = localStorage.getItem('factory_erp_local_yarn_ledger');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_YARN_LEDGER;
+  return [];
 }
 
 export function saveLocalYarnLedger(data) {
@@ -787,9 +797,8 @@ export function getLocalAccLedger() {
   try {
     const raw = localStorage.getItem('factory_erp_local_acc_ledger');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_ACC_LEDGER;
+  return [];
 }
 
 export function saveLocalAccLedger(data) {
@@ -830,9 +839,8 @@ export function getLocalIETargets() {
   try {
     const raw = localStorage.getItem('factory_erp_local_ie_targets');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_IE_TARGETS;
+  return [];
 }
 
 export function saveLocalIETargets(targets) {
@@ -852,9 +860,8 @@ export function getLocalIERecords() {
   try {
     const raw = localStorage.getItem('factory_erp_local_ie_records');
     if (raw !== null) return JSON.parse(raw);
-    if (isDemoDataCleared()) return [];
   } catch {}
-  return isDemoDataCleared() ? [] : DEFAULT_SAMPLE_IE_RECORDS;
+  return [];
 }
 
 export function saveLocalIERecords(records) {

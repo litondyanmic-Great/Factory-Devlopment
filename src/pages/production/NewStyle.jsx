@@ -117,19 +117,19 @@ export default function NewStyle() {
     };
 
     try {
-      let finalId = generatedId;
+      const finalId = generatedId;
       try {
-        const docRef = await addDoc(collection(db, 'styles'), {
+        await setDoc(doc(db, 'styles', finalId), {
           ...newStyleData,
+          id: finalId,
           createdAt: serverTimestamp(),
         });
-        finalId = docRef.id;
       } catch (err) {
-        console.warn('Firestore addDoc fallback:', err);
+        console.warn('Firestore setDoc fallback:', err);
       }
 
-      // Save to local styles cache
-      const currentList = getLocalStyles();
+      // Save to local styles cache without duplicates
+      const currentList = getLocalStyles().filter((s) => s.id !== finalId);
       saveLocalStyles([{ ...newStyleData, id: finalId }, ...currentList]);
 
       setSuccessMsg(t('স্টাইল সফলভাবে তৈরি ও সংরক্ষিত হয়েছে!', 'Style created and saved successfully!'));

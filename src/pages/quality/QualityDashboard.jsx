@@ -133,8 +133,8 @@ export default function QualityDashboard() {
             <ShieldAlert size={16} /> {t('রেড অ্যালার্ট — মনোযোগ প্রয়োজন', 'Red Alerts — Needs Attention')}
           </h2>
           <div className="space-y-2">
-            {redAlerts.map((c) => (
-              <div key={c.id} className="flex items-center justify-between text-sm">
+            {redAlerts.map((c, idx) => (
+              <div key={`${c.id || 'alert'}-${idx}`} className="flex items-center justify-between text-sm">
                 <span className="text-ink">
                   {c.styleLabel} · {stageLabel(c.section, lang)}
                 </span>
@@ -166,8 +166,8 @@ export default function QualityDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {grid.slice(0, 40).map((c) => (
-                  <tr key={c.id} className="border-b border-line last:border-0">
+                {grid.slice(0, 40).map((c, idx) => (
+                  <tr key={`${c.id || 'grid'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4"><TrafficLight tone={qualityTone(c.passRate, settings)} /></td>
                     <td className="py-2 pr-4 text-ink">{c.styleLabel}</td>
                     <td className="py-2 pr-4 text-ink-soft">{stageLabel(c.section, lang)}</td>

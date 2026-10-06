@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { btnSecondary } from '../components/ui';
 import { useNavigate } from 'react-router-dom';
@@ -10,6 +10,12 @@ export default function PendingApproval() {
   const { t } = useLang();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    if (profile?.status === 'active') {
+      navigate('/', { replace: true });
+    }
+  }, [profile?.status, navigate]);
 
   async function handleLogout() {
     await logout();

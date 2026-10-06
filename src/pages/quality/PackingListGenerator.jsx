@@ -83,7 +83,13 @@ export default function PackingListGenerator() {
       unsub = onSnapshot(collection(db, 'styles'), (snap) => {
         if (!snap.empty) {
           const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-          setStylesList(list);
+          const seen = new Set();
+          const unique = list.filter((s) => {
+            if (!s.id || seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          setStylesList(unique);
         }
       });
     } catch {}
@@ -673,7 +679,7 @@ export default function PackingListGenerator() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredSavedLists.map((item) => {
+                    {filteredSavedLists.map((item, idx) => {
                       let itemCtns = 0;
                       let itemPcs = 0;
                       (item.rows || []).forEach((r) => {
@@ -691,7 +697,7 @@ export default function PackingListGenerator() {
                       const itemGw = (itemCtns * Number(item.cartonGrossWeightKg || 13)).toFixed(1);
 
                       return (
-                        <tr key={item.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                        <tr key={`${item.id || 'pack'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                           <td className="py-3 pr-3">
                             <p className="font-mono text-xs font-bold text-indigo">
                               {item.poNo || t('নামহীন PO', 'No PO')}
@@ -969,8 +975,8 @@ export default function PackingListGenerator() {
                   }}
                 >
                   <option value="">{t('— স্টাইল নির্বাচন করুন (বা নিজে লিখুন) —', '— Select a Style to auto-fill (or type manually below) —')}</option>
-                  {stylesList.map((st) => (
-                    <option key={st.id} value={st.id}>
+                  {stylesList.map((st, idx) => (
+                    <option key={`${st.id}-${idx}`} value={st.id}>
                       {st.styleNo} {st.styleName ? `— ${st.styleName}` : ''} ({st.buyer || 'No Buyer'})
                     </option>
                   ))}
@@ -1178,12 +1184,12 @@ export default function PackingListGenerator() {
                       </td>
                     </tr>
                   ) : (
-                    docData.rows.map((row) => {
+                    docData.rows.map((row, idx) => {
                     const ctns = Math.max(0, Number(row.ctnTo) - Number(row.ctnFrom) + 1);
                     const totalPcs = ctns * Number(row.pcsPerCtn || 0);
 
                     return (
-                      <tr key={row.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                      <tr key={`${row.id || 'row'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                         <td className="py-2 pr-2">
                           <div className="flex items-center gap-1 font-mono">
                             <input

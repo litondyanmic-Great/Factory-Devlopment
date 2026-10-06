@@ -175,8 +175,8 @@ export default function QualityReports() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((c) => (
-                <tr key={c.id} className="border-b border-line last:border-0">
+              {filtered.map((c, idx) => (
+                <tr key={`${c.id || 'qr'}-${idx}`} className="border-b border-line last:border-0">
                   <td className="px-4 py-3"><TrafficLight tone={qualityTone(c.passRate, settings)} /></td>
                   <td className="px-4 py-3 text-ink-soft">{c.date}</td>
                   <td className="px-4 py-3 text-ink">{c.styleLabel}</td>

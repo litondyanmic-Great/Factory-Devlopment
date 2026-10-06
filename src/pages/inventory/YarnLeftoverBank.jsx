@@ -226,8 +226,8 @@ export default function YarnLeftoverBank() {
                 </tr>
               </thead>
               <tbody>
-                {ledger.map((e) => (
-                  <tr key={e.id} className="border-b border-line last:border-0">
+                {ledger.map((e, idx) => (
+                  <tr key={`${e.id || 'bank'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4">
                       {e.type === 'deposit' ? <ArrowDownCircle size={15} className="text-green" /> : <ArrowUpCircle size={15} className="text-amber" />}
                     </td>

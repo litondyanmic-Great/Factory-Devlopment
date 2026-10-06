@@ -135,9 +135,9 @@ export default function UsersAdmin() {
           </div>
 
           <div className="space-y-2.5">
-            {pendingUsers.map((pu) => (
+            {pendingUsers.map((pu, idx) => (
               <div
-                key={pu.id}
+                key={`${pu.id || 'pending-user'}-${idx}`}
                 className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-line bg-surface p-3 shadow-sm"
               >
                 <div>
@@ -211,8 +211,8 @@ export default function UsersAdmin() {
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <Fragment key={u.id}>
+              {users.map((u, idx) => (
+                <Fragment key={`${u.id || 'user'}-${idx}`}>
                   <tr className="border-b border-line last:border-0">
                     <td className="px-4 py-3 text-ink">{u.name}</td>
                     <td className="px-4 py-3 text-ink-soft">{u.email}</td>

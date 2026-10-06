@@ -67,11 +67,15 @@ export default function LiveFloorBoard() {
     try {
       unsub = onSnapshot(collection(db, 'styles'), (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        if (list.length > 0) {
-          const localStyles = getLocalStyles();
-          const remoteIds = new Set(list.map((s) => s.id));
-          const extras = localStyles.filter((s) => !remoteIds.has(s.id));
-          setStyles([...list, ...extras]);
+        const seen = new Set();
+        const unique = list.filter((s) => {
+          if (!s.id || seen.has(s.id)) return false;
+          seen.add(s.id);
+          return true;
+        });
+        if (unique.length > 0) {
+          setStyles(unique);
+          saveLocalStyles(unique);
         } else {
           setStyles(getLocalStyles());
         }
@@ -94,10 +98,8 @@ export default function LiveFloorBoard() {
             id: d.id,
             styleId: d.data().styleId || d.ref.parent?.parent?.id,
           }));
-          const localEntries = getLocalProductionEntries();
-          const remoteIds = new Set(list.map((e) => e.id));
-          const extras = localEntries.filter((e) => !remoteIds.has(e.id));
-          setEntries([...list, ...extras]);
+          setEntries(list);
+          saveLocalProductionEntries(list);
         },
         (err) => {
           console.warn('CollectionGroup productionEntries notice:', err);
@@ -569,12 +571,12 @@ export default function LiveFloorBoard() {
           </div>
 
           <div className="space-y-3">
-            {floorData.activeStyles.map((st) => {
+            {floorData.activeStyles.map((st, idx) => {
               const pct = st.todayTarget > 0 ? Math.min(100, Math.round((st.todayProduced / st.todayTarget) * 100)) : 0;
 
               return (
                 <div
-                  key={st.id || st.styleNo}
+                  key={`${st.id || st.styleNo || 'st'}-${idx}`}
                   className="rounded-xl border border-slate-800/80 bg-slate-950/60 p-4 space-y-3 hover:border-slate-700 transition"
                 >
                   <div className="flex justify-between items-start">

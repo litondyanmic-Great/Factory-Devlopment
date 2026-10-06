@@ -297,8 +297,8 @@ export default function StyleAccessoryTracking() {
                 <Field label={t('আইটেম *', 'Item *')}>
                   <select value={orderForm.itemId} onChange={(e) => setOrderForm((f) => ({ ...f, itemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {accessoryItems.map((i) => (
-                      <option key={i.id} value={i.id}>{i.name}</option>
+                    {accessoryItems.map((i, idx) => (
+                      <option key={`${i.id}-${idx}`} value={i.id}>{i.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -321,8 +321,8 @@ export default function StyleAccessoryTracking() {
                 <Field label={t('আইটেম *', 'Item *')}>
                   <select value={receiveForm.itemId} onChange={(e) => setReceiveForm((f) => ({ ...f, itemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {accessoryItems.map((i) => (
-                      <option key={i.id} value={i.id}>{i.name}</option>
+                    {accessoryItems.map((i, idx) => (
+                      <option key={`${i.id}-${idx}`} value={i.id}>{i.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -350,8 +350,8 @@ export default function StyleAccessoryTracking() {
                 <Field label={t('আইটেম *', 'Item *')}>
                   <select value={issueForm.itemId} onChange={(e) => setIssueForm((f) => ({ ...f, itemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {accessoryItems.map((i) => (
-                      <option key={i.id} value={i.id}>{i.name}</option>
+                    {accessoryItems.map((i, idx) => (
+                      <option key={`${i.id}-${idx}`} value={i.id}>{i.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -435,8 +435,8 @@ export default function StyleAccessoryTracking() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ledger.map((e) => (
-                      <tr key={e.id} className="border-b border-line last:border-0">
+                    {ledger.map((e, idx) => (
+                      <tr key={`${e.id || 'acc-ledger'}-${idx}`} className="border-b border-line last:border-0">
                         <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
                         <td className="py-2 pr-4 text-ink">{e.type === 'order' ? t('অর্ডার', 'Ordered') : e.type === 'receipt' ? t('রিসিভড', 'Received') : t('ইস্যু', 'Issued')}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.itemName}</td>

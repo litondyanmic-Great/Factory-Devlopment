@@ -53,11 +53,8 @@ export function AuthProvider({ children }) {
               } else {
                 // If user document is missing in Firestore, create appropriately
                 const isOwner = fbUser.email?.toLowerCase() === 'liton.dynmic@gmail.com';
-                const metaSnap = await getDoc(doc(db, 'system', 'meta')).catch(() => null);
-                const isFirstUser = !metaSnap?.exists() || metaSnap.data()?.initialized !== true;
-
-                const role = isOwner || isFirstUser ? 'admin' : 'pending';
-                const status = isOwner || isFirstUser ? 'active' : 'pending';
+                const role = isOwner ? 'admin' : 'pending';
+                const status = isOwner ? 'active' : 'pending';
 
                 const newProfile = {
                   name: fbUser.displayName || 'Factory User',
@@ -114,11 +111,8 @@ export function AuthProvider({ children }) {
     await updateProfile(cred.user, { displayName: name });
 
     const isOwner = cleanEmail === 'liton.dynmic@gmail.com';
-    const metaSnap = await getDoc(doc(db, 'system', 'meta')).catch(() => null);
-    const isFirstUser = !metaSnap?.exists() || metaSnap.data()?.initialized !== true;
-
-    const role = isOwner || isFirstUser ? 'admin' : 'pending';
-    const status = isOwner || isFirstUser ? 'active' : 'pending';
+    const role = isOwner ? 'admin' : 'pending';
+    const status = isOwner ? 'active' : 'pending';
 
     const profileData = {
       name,

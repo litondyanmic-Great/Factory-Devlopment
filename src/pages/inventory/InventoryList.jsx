@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, deleteDoc, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2, Boxes, Wind, MapPin, PiggyBank } from 'lucide-react';
+import { Plus, Trash2, Boxes, Wind, MapPin } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { btnPrimary, btnSecondary, EmptyState, Pill } from '../../components/ui';
@@ -64,11 +64,13 @@ export default function InventoryList() {
       unsub = onSnapshot(
         query(collectionGroup(db, 'yarnLedger')),
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => d.data());
-            setYarnLedger(list);
-            saveLocalYarnLedger(list);
-          }
+          const list = snap.docs.map((d) => ({
+            id: d.id,
+            styleId: d.data().styleId || d.ref?.parent?.parent?.id,
+            ...d.data(),
+          }));
+          setYarnLedger(list);
+          saveLocalYarnLedger(list);
         },
         () => {}
       );
@@ -82,11 +84,13 @@ export default function InventoryList() {
       unsub = onSnapshot(
         query(collectionGroup(db, 'accessoryLedger')),
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => d.data());
-            setAccLedger(list);
-            saveLocalAccLedger(list);
-          }
+          const list = snap.docs.map((d) => ({
+            id: d.id,
+            styleId: d.data().styleId || d.ref?.parent?.parent?.id,
+            ...d.data(),
+          }));
+          setAccLedger(list);
+          saveLocalAccLedger(list);
         },
         () => {}
       );
@@ -216,13 +220,13 @@ export default function InventoryList() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((i) => {
+              {visible.map((i, idx) => {
                 const stock = stockByItemId.get(i.id) || 0;
                 const unit = i.type === 'yarn' ? YARN_UNIT : i.unit;
                 const low = stock <= Number(i.reorderLevel || 0);
                 return (
                   <tr
-                    key={i.id}
+                    key={`${i.id || 'inv'}-${idx}`}
                     onClick={() => (window.location.href = `/inventory/${i.id}`)}
                     className="cursor-pointer border-b border-line last:border-0 hover:bg-paper"
                   >

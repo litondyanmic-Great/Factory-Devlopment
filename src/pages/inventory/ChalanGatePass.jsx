@@ -588,7 +588,7 @@ export default function ChalanGatePass() {
                 </thead>
                 <tbody>
                   {selectedChalan.items.map((item, idx) => (
-                    <tr key={item.id} className="border-b border-gray-300">
+                    <tr key={`${item.id || 'item'}-${idx}`} className="border-b border-gray-300">
                       <td className="border border-gray-400 p-2 text-center">{idx + 1}</td>
                       <td className="border border-gray-400 p-2 font-medium">{item.desc}</td>
                       <td className="border border-gray-400 p-2">
@@ -715,8 +715,8 @@ export default function ChalanGatePass() {
               </tr>
             </thead>
             <tbody>
-              {filteredChalans.map((c) => (
-                <tr key={c.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+              {filteredChalans.map((c, idx) => (
+                <tr key={`${c.id || 'chalan'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                   <td className="py-3 pr-3">
                     <p className="font-mono text-xs font-bold text-indigo">{c.chalanNo}</p>
                     <p className="text-[11px] text-ink-soft">{c.date} • {c.time}</p>

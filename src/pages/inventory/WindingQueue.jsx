@@ -35,116 +35,27 @@ import { getLocalYarnLedger, saveLocalYarnLedger } from '../../lib/demoData';
 
 const LOCAL_STORAGE_KEY = 'factory_erp_winding_custom_ledger';
 
-// Default initial sample records for demo / offline experience
-const INITIAL_DEMO_ENTRIES = [
-  {
-    id: 'demo-wind-01',
-    styleId: 'style-demo-hm-01',
-    styleNo: 'HM-2026/SW-01',
-    styleLabel: "HM-2026/SW-01 — Men's Crew Neck Pullover",
-    yarnItemId: 'yarn-demo-01',
-    yarnItemName: '2/28 Nm 100% Acrylic Soft Yarn (Navy Blue)',
-    type: 'issueToWinding',
-    qty: 450.0,
-    block: 'Block B',
-    date: '2026-09-27',
-    notes: 'Yarn store issue chalan #CH-8821 for body knitting',
-    enteredBy: 'Store Manager (Kalam)',
-    windingReceived: false,
-    windingReceivedQty: 0,
-  },
-  {
-    id: 'demo-wind-02',
-    styleId: 'style-demo-zara-02',
-    styleNo: 'ZR-2026/CD-04',
-    styleLabel: "ZR-2026/CD-04 — Women's Cable Knit Cardigan",
-    yarnItemId: 'yarn-demo-02',
-    yarnItemName: '2/32 Nm Wool Blend Yarn (Ivory Heather)',
-    type: 'issueToWinding',
-    qty: 320.0,
-    block: 'Block D',
-    date: '2026-09-28',
-    notes: 'Store issue chalan #CH-8834',
-    enteredBy: 'Store Assistant (Mizan)',
-    windingReceived: true,
-    windingReceivedQty: 320.0,
-    windingReceivedDate: '2026-09-28',
-    windingReceivedBy: 'Winding Operator (Jalal)',
-    windingLotNo: 'LOT-Z22',
-    windingConeCount: 80,
-  },
-  {
-    id: 'demo-wind-03',
-    styleId: 'style-demo-zara-02',
-    styleNo: 'ZR-2026/CD-04',
-    styleLabel: "ZR-2026/CD-04 — Women's Cable Knit Cardigan",
-    yarnItemId: 'yarn-demo-02',
-    yarnItemName: '2/32 Nm Wool Blend Yarn (Ivory Heather)',
-    type: 'windingToKnitting',
-    qty: 150.0,
-    coneCount: 38,
-    lotNo: 'LOT-Z22',
-    machineNo: 'W-03',
-    destination: 'knitting',
-    destinationSection: 'knitting',
-    date: '2026-09-29',
-    receiverName: 'Sujon (Knitting Floor Incharge)',
-    notes: 'Shift A winding done, handed over to knitting line 4',
-    enteredBy: 'Winding Operator (Jalal)',
-  },
-  {
-    id: 'demo-wind-04',
-    styleId: 'style-demo-next-03',
-    styleNo: 'NX-2026/HD-09',
-    styleLabel: 'NX-2026/HD-09 — Jacquard Heavy Knit Hoodie',
-    yarnItemId: 'yarn-demo-03',
-    yarnItemName: '100% Cotton Melange 20/2 (Charcoal Grey)',
-    type: 'issueToWinding',
-    qty: 550.0,
-    block: 'Block A',
-    date: '2026-09-26',
-    notes: 'Store issue for sampling & production batch 1',
-    enteredBy: 'Store Manager (Kalam)',
-    windingReceived: true,
-    windingReceivedQty: 550.0,
-    windingReceivedDate: '2026-09-26',
-    windingReceivedBy: 'Winding Supervisor (Rezaul)',
-    windingLotNo: 'LOT-NX-01',
-    windingConeCount: 140,
-  },
-  {
-    id: 'demo-wind-05',
-    styleId: 'style-demo-next-03',
-    styleNo: 'NX-2026/HD-09',
-    styleLabel: 'NX-2026/HD-09 — Jacquard Heavy Knit Hoodie',
-    yarnItemId: 'yarn-demo-03',
-    yarnItemName: '100% Cotton Melange 20/2 (Charcoal Grey)',
-    type: 'sectionTransfer',
-    fromSection: 'winding',
-    toSection: 'linking',
-    destinationSection: 'linking',
-    qty: 40.0,
-    coneCount: 10,
-    lotNo: 'LOT-NX-01',
-    machineNo: 'W-01',
-    date: '2026-09-28',
-    receiverName: 'Monir (Linking Master)',
-    notes: 'Direct linking yarn requirement issued from winding',
-    enteredBy: 'Winding Supervisor (Rezaul)',
-  },
-];
+// Clean initial records — NO fake demo entries
+const INITIAL_DEMO_ENTRIES = [];
 
 function getLocalWindingEntries() {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item) => item && !String(item.id || '').startsWith('demo-'));
+      }
+    }
   } catch {}
-  return null;
+  return [];
 }
 
 function saveLocalWindingEntries(items) {
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(items));
+    const cleanItems = (items || []).filter((item) => item && !String(item.id || '').startsWith('demo-'));
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(cleanItems));
+    window.dispatchEvent(new Event('factory_erp_data_updated'));
   } catch {}
 }
 
@@ -187,11 +98,8 @@ export default function WindingQueue() {
 
   // Load entries from Firestore and synchronize with local cache
   useEffect(() => {
-    let localData = getLocalWindingEntries();
-    if (!localData) {
-      localData = INITIAL_DEMO_ENTRIES;
-      saveLocalWindingEntries(localData);
-    }
+    const initialLocal = getLocalWindingEntries();
+    setEntries(initialLocal);
 
     try {
       const q = query(collectionGroup(db, 'yarnLedger'));
@@ -209,34 +117,23 @@ export default function WindingQueue() {
             })
             .filter(
               (e) =>
-                e.type === 'issueToWinding' ||
-                e.type === 'windingReceipt' ||
-                e.type === 'windingToKnitting' ||
-                (e.type === 'sectionTransfer' && (e.fromSection === 'winding' || e.destinationSection))
+                !String(e.id || '').startsWith('demo-') &&
+                (e.type === 'issueToWinding' ||
+                  e.type === 'windingReceipt' ||
+                  e.type === 'windingToKnitting' ||
+                  (e.type === 'sectionTransfer' && (e.fromSection === 'winding' || e.destinationSection || e.toSection)))
             );
 
-          // If Firestore has docs, merge with local data so user tests are never lost
-          if (list.length > 0) {
-            // merge unique by id
-            const existingIds = new Set(list.map((x) => x.id));
-            const merged = [...list];
-            (localData || []).forEach((item) => {
-              if (!existingIds.has(item.id)) merged.push(item);
-            });
-            setEntries(merged);
-            saveLocalWindingEntries(merged);
-          } else {
-            setEntries(localData);
-          }
+          setEntries(list);
+          saveLocalWindingEntries(list);
         },
         () => {
-          // If Firestore is offline or fails, use local data seamlessly
-          setEntries(localData);
+          setEntries(getLocalWindingEntries());
         }
       );
       return unsub;
     } catch {
-      setEntries(localData);
+      setEntries(getLocalWindingEntries());
     }
   }, []);
 
@@ -501,59 +398,54 @@ export default function WindingQueue() {
 
     setIsBusy(true);
     const row = issueModalRow;
-    const dest = issueForm.destination;
-    const targetStyleId = (row.styleId && row.styleId !== 'general')
-      ? row.styleId
-      : (row.styleNo ? getLocalStyles().find((s) => s.styleNo === row.styleNo)?.id : '') || row.styleId || '';
+    const dest = issueForm.destination || 'knitting';
 
-    const newRecord = {
-      id: `wind-issue-${Date.now()}`,
-      styleId: targetStyleId,
-      styleNo: row.styleNo,
-      styleLabel: row.styleLabel,
-      yarnItemId: row.yarnItemId,
-      yarnItemName: row.yarnItemName,
+    // Robust style resolution from row, local styles, or entries
+    let targetStyleId = row.styleId && row.styleId !== 'general' ? row.styleId : '';
+    if (!targetStyleId && row.styleNo) {
+      const match = getLocalStyles().find((s) => s.styleNo === row.styleNo);
+      if (match) targetStyleId = match.id;
+    }
+    if (!targetStyleId) {
+      // Find from entries
+      const entryMatch = (entries || []).find((e) => e.styleNo === row.styleNo && e.styleId && e.styleId !== 'general');
+      if (entryMatch) targetStyleId = entryMatch.styleId;
+    }
+
+    const firestoreData = {
       type: dest === 'knitting' ? 'windingToKnitting' : 'sectionTransfer',
       destination: dest,
       destinationSection: dest,
       fromSection: 'winding',
       toSection: dest,
+      styleId: targetStyleId || '',
+      styleNo: row.styleNo || '',
+      styleLabel: row.styleLabel || row.styleNo || 'Unknown Style',
+      yarnItemId: row.yarnItemId || '',
+      yarnItemName: row.yarnItemName || 'Yarn',
       qty: n,
       coneCount: Number(issueForm.coneCount) || 0,
       lotNo: issueForm.lotNo || '',
       machineNo: issueForm.machineNo || '',
-      date: issueForm.date,
+      date: issueForm.date || new Date().toISOString().slice(0, 10),
       receiverName: issueForm.receiverName || '',
       notes: issueForm.notes || '',
-      enteredBy: profile?.name || user?.displayName || 'Winding Section',
+      enteredBy: profile?.name || user?.displayName || user?.email || 'Winding Section',
+      createdAt: serverTimestamp(),
+    };
+
+    const newRecord = {
+      ...firestoreData,
+      id: `wind-issue-${Date.now()}`,
       createdAt: new Date().toISOString(),
     };
 
     try {
-      // 1. Try saving to Firestore if styleId is present
+      // 1. Save to Firestore if styleId is present
       if (targetStyleId && targetStyleId !== 'general') {
         try {
-          await addDoc(collection(db, 'styles', targetStyleId, 'yarnLedger'), {
-            type: newRecord.type,
-            styleId: targetStyleId,
-            destination: dest,
-            destinationSection: dest,
-            fromSection: 'winding',
-            toSection: dest,
-            yarnItemId: row.yarnItemId,
-            yarnItemName: row.yarnItemName,
-            styleNo: row.styleNo,
-            styleLabel: row.styleLabel,
-            qty: n,
-            coneCount: newRecord.coneCount,
-            lotNo: newRecord.lotNo,
-            machineNo: newRecord.machineNo,
-            date: issueForm.date,
-            receiverName: newRecord.receiverName,
-            notes: newRecord.notes,
-            enteredBy: newRecord.enteredBy,
-            createdAt: serverTimestamp(),
-          });
+          const docRef = await addDoc(collection(db, 'styles', targetStyleId, 'yarnLedger'), firestoreData);
+          newRecord.id = docRef.id;
         } catch (err) {
           console.warn('Firestore addDoc warning:', err);
         }
@@ -568,6 +460,8 @@ export default function WindingQueue() {
         const localYarn = getLocalYarnLedger();
         saveLocalYarnLedger([newRecord, ...localYarn]);
       } catch {}
+
+      window.dispatchEvent(new Event('factory_erp_data_updated'));
 
       const destLabel = DESTINATION_SECTIONS.find((d) => d.key === dest)?.label || dest;
       setSuccessMsg(
@@ -834,8 +728,8 @@ export default function WindingQueue() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredIncoming.map((item) => (
-                      <tr key={item.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                    {filteredIncoming.map((item, idx) => (
+                      <tr key={`${item.id || 'incoming'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                         <td className="py-3 pr-3 text-xs text-ink-soft">{item.date}</td>
                         <td className="py-3 pr-3">
                           <p className="font-medium text-ink">{item.styleLabel || item.styleNo}</p>
@@ -1073,14 +967,14 @@ export default function WindingQueue() {
                     </tr>
                   </thead>
                   <tbody>
-                    {windingHistory.map((item) => {
+                    {windingHistory.map((item, idx) => {
                       const isReceive =
                         item.type === 'issueToWinding' || item.type === 'windingReceipt';
                       const isKnitting =
                         item.type === 'windingToKnitting' || item.destination === 'knitting';
 
                       return (
-                        <tr key={item.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                        <tr key={`${item.id || 'history'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                           <td className="py-3 pr-3 text-xs text-ink-soft">{item.date}</td>
                           <td className="py-3 pr-3">
                             {isReceive ? (

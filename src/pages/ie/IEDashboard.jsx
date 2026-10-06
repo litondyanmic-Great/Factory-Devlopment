@@ -141,8 +141,14 @@ export default function IEDashboard() {
         (snap) => {
           if (!snap.empty) {
             const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
+            const seen = new Set();
+            const unique = list.filter((s) => {
+              if (!s.id || seen.has(s.id)) return false;
+              seen.add(s.id);
+              return true;
+            });
+            setStyles(unique);
+            saveLocalStyles(unique);
           }
         },
         () => {}
@@ -802,8 +808,8 @@ export default function IEDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {styleTargetMatrix.map((item) => (
-                    <tr key={item.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                  {styleTargetMatrix.map((item, idx) => (
+                    <tr key={`${item.id || 'matrix'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                       <td className="py-3 px-3">
                         <div className="font-semibold text-ink">{item.styleNo}</div>
                         <div className="text-[11px] text-ink-soft">
@@ -1093,12 +1099,12 @@ export default function IEDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredReportRecords.map((r) => {
+                  {filteredReportRecords.map((r, idx) => {
                     const variance = Number(r.actualQty || 0) - Number(r.targetQty || 0);
                     const achRate = r.targetQty > 0 ? (r.actualQty / r.targetQty) * 100 : null;
 
                     return (
-                      <tr key={r.id} className="border-b border-line last:border-0 hover:bg-paper/50">
+                      <tr key={`${r.id || 'record'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/50">
                         <td className="py-2.5 px-3 font-mono font-medium text-ink">{r.date}</td>
                         <td className="py-2.5 px-3">
                           <div className="font-semibold text-ink">{r.styleNo}</div>
@@ -1420,8 +1426,8 @@ export default function IEDashboard() {
                         </tr>
                       </thead>
                       <tbody>
-                        {records.map((r) => (
-                          <tr key={r.id} className="border-b border-line last:border-0 hover:bg-paper/40">
+                        {records.map((r, idx) => (
+                          <tr key={`${r.id || 'rec'}-${idx}`} className="border-b border-line last:border-0 hover:bg-paper/40">
                             <td className="py-2 px-3 font-mono">{r.date}</td>
                             <td className="py-2 px-3">{stageLabel(r.stage, lang)}</td>
                             <td className="py-2 px-3 text-right font-mono">{r.smv}m</td>
@@ -1685,8 +1691,8 @@ function SetStyleTargetModal({ styleItem, allStyles, onClose, onSave }) {
               value={selectedStyleId}
               onChange={(e) => setSelectedStyleId(e.target.value)}
             >
-              {allStyles.map((s) => (
-                <option key={s.id} value={s.id}>
+              {allStyles.map((s, idx) => (
+                <option key={`${s.id}-${idx}`} value={s.id}>
                   {s.styleNo} {s.styleName ? `(${s.styleName})` : ''} — {s.buyer}
                 </option>
               ))}

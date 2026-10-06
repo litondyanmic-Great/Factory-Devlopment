@@ -276,8 +276,8 @@ export default function ReceivingInspection() {
             <span className="rounded-full bg-red px-2 py-0.5 text-xs text-white">{onHold.length}</span>
           </h2>
           <div className="space-y-2">
-            {onHold.map((entry) => (
-              <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
+            {onHold.map((entry, idx) => (
+              <div key={`${entry.id || 'hold'}-${idx}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
                 <div>
                   <p className="font-medium text-ink">
                     {entry.styleNo} · {entry[cfg.nameField]} — {entry.qty} {cfg.unit} {t('রিসিভড', 'received')}
@@ -322,8 +322,8 @@ export default function ReceivingInspection() {
           <EmptyState title={t('সব রিসিভড লট ইন্সপেকশন করা আছে', 'Every receipt has been inspected')} />
         ) : (
           <div className="space-y-2">
-            {pending.map((entry) => (
-              <div key={entry.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-paper p-3 text-sm">
+            {pending.map((entry, idx) => (
+              <div key={`${entry.id || 'pending'}-${idx}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-paper p-3 text-sm">
                 <div>
                   <p className="font-medium text-ink">
                     {entry.styleNo} · {entry[cfg.nameField]} — {entry.qty} {cfg.unit}
@@ -386,8 +386,8 @@ export default function ReceivingInspection() {
                 </tr>
               </thead>
               <tbody>
-                {filteredHistory.map((r) => (
-                  <tr key={r.id} className="border-b border-line last:border-0">
+                {filteredHistory.map((r, idx) => (
+                  <tr key={`${r.id || 'rec'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{r.date}</td>
                     <td className="py-2 pr-4 text-ink">{r.styleNo}</td>
                     <td className="py-2 pr-4 text-ink-soft">{r[cfg.nameField]}</td>

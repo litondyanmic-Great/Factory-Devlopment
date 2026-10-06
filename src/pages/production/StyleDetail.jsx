@@ -121,14 +121,18 @@ export default function StyleDetail() {
         e.destinationSection === 'winding' ||
         e.toSection === 'winding';
 
-      if (e.type === 'windingToKnitting') {
+      if (e.type === 'windingToKnitting' || (isKnitting && e.fromSection === 'winding')) {
         b.windingToKnitting += q;
       } else if (isKnitting) {
         b.issuedKnitting += q;
       }
 
-      if (isWinding && e.type !== 'windingToKnitting') {
+      if (isWinding && e.type !== 'windingToKnitting' && e.fromSection !== 'winding') {
         b.issuedWinding += q;
+      }
+
+      if (e.fromSection === 'winding' && !isKnitting) {
+        b.issuedOtherWinding = (b.issuedOtherWinding || 0) + q;
       }
 
       if (e.type === 'consumption') {
@@ -137,8 +141,8 @@ export default function StyleDetail() {
     });
     return Array.from(map.values()).map((b) => ({
       ...b,
-      ready: b.issuedKnitting + b.windingToKnitting - b.consumed,
-      inWinding: Math.max(0, b.issuedWinding - b.windingToKnitting),
+      ready: Math.max(0, b.issuedKnitting + b.windingToKnitting - b.consumed),
+      inWinding: Math.max(0, b.issuedWinding - b.windingToKnitting - (b.issuedOtherWinding || 0)),
     }));
   }, [yarnLedger]);
   const activeYarnReady = yarnReadyBalances.filter((b) => b.ready > 0.001);
@@ -223,13 +227,13 @@ export default function StyleDetail() {
             const all = getLocalStyles();
             saveLocalStyles(all.map((s) => (s.id === id ? data : s)));
           } else {
-            // Style not in Firestore yet! Auto-seed from local styles so all users can see & update it
+            // If a custom newly created style is only in local storage, sync to Firestore
             const localStyle = getLocalStyles().find((s) => s.id === id);
-            if (localStyle) {
+            if (localStyle && !localStyle.id.startsWith('style-hm-') && !localStyle.id.startsWith('style-zr-') && !localStyle.id.startsWith('style-nx-') && !localStyle.id.startsWith('style-mks-')) {
               try {
                 await setDoc(styleRef, { ...localStyle, createdAt: serverTimestamp() }, { merge: true });
               } catch (e) {
-                console.warn('Auto-seed style notice:', e);
+                console.warn('Sync custom style notice:', e);
               }
             }
           }
@@ -1214,8 +1218,8 @@ export default function StyleDetail() {
                 </tr>
               </thead>
               <tbody>
-                {entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).map((e) => (
-                  <tr key={e.id} className="border-b border-line last:border-0">
+                {entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).map((e, idx) => (
+                  <tr key={`${e.id || 'entry'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
                     <td className="py-2 pr-4 text-ink">{stageLabel(e.stage, lang)}</td>
                     <td className="py-2 pr-4 text-ink-soft">

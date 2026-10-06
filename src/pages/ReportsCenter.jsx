@@ -60,8 +60,14 @@ export default function ReportsCenter() {
         (snap) => {
           if (!snap.empty) {
             const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setAllStyles(list);
-            saveLocalStyles(list);
+            const seen = new Set();
+            const unique = list.filter((s) => {
+              if (!s.id || seen.has(s.id)) return false;
+              seen.add(s.id);
+              return true;
+            });
+            setAllStyles(unique);
+            saveLocalStyles(unique);
           }
         },
         () => {}
@@ -400,8 +406,8 @@ export default function ReportsCenter() {
                   </tr>
                 </thead>
                 <tbody>
-                  {overProductionAll.map((r) => (
-                    <tr key={r.styleNo} className="border-b border-line last:border-0">
+                  {overProductionAll.map((r, idx) => (
+                    <tr key={`${r.styleNo || 'style'}-${idx}`} className="border-b border-line last:border-0">
                       <td className="py-2 pr-4 text-ink">{r.styleNo} <span className="text-xs text-ink-soft">({r.buyer})</span></td>
                       <td className="py-2 pr-4 text-ink-soft">{r.orderQty}</td>
                       <td className="py-2 pr-4 text-ink-soft">{r.packed}</td>

@@ -37,8 +37,14 @@ export default function DailyProductionSheet() {
         (snap) => {
           if (!snap.empty) {
             const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
+            const seen = new Set();
+            const unique = list.filter((s) => {
+              if (!s.id || seen.has(s.id)) return false;
+              seen.add(s.id);
+              return true;
+            });
+            setStyles(unique);
+            saveLocalStyles(unique);
           }
         },
         () => {}
@@ -74,7 +80,15 @@ export default function DailyProductionSheet() {
     return Array.from(set).sort();
   }, [styles]);
 
-  const visibleStyles = (styles || []).filter((s) => buyerFilter === 'all' || s.buyer === buyerFilter);
+  const visibleStyles = useMemo(() => {
+    const seen = new Set();
+    const unique = (styles || []).filter((s) => {
+      if (!s || !s.id || seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+    return unique.filter((s) => buyerFilter === 'all' || s.buyer === buyerFilter);
+  }, [styles, buyerFilter]);
 
   // For each style, compute {today, total} per stage as of the selected
   // date — total is a proper as-of-date cumulative (summed from dated
@@ -191,8 +205,8 @@ export default function DailyProductionSheet() {
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ style, stageData }) => (
-                <tr key={style.id} className="hover:bg-paper">
+              {rows.map(({ style, stageData }, idx) => (
+                <tr key={`${style.id || 'style'}-${idx}`} className="hover:bg-paper">
                   <td className="sticky left-0 z-10 border border-line bg-surface px-3 py-2 text-ink">{style.buyer}</td>
                   <td className="border border-line px-3 py-2 text-ink">
                     <Link to={`/production/${style.id}`} className="hover:text-indigo hover:underline">

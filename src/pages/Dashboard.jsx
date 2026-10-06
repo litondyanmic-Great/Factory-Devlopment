@@ -49,12 +49,21 @@ export default function Dashboard() {
     let unsub = () => {};
     try {
       unsub = onSnapshot(
-        query(collection(db, 'styles')),
+        collection(db, 'styles'),
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
+          const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+          const seen = new Set();
+          const uniqueList = list.filter((s) => {
+            if (!s.id || seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          if (uniqueList.length > 0) {
+            setStyles(uniqueList);
+            saveLocalStyles(uniqueList);
+          } else if (snap.empty) {
+            setStyles([]);
+            saveLocalStyles([]);
           }
         },
         () => {}
@@ -71,14 +80,17 @@ export default function Dashboard() {
       unsub = onSnapshot(
         query(collectionGroup(db, 'productionEntries')),
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({
-              id: d.id,
-              styleId: d.data().styleId || d.ref.parent?.parent?.id,
-              ...d.data(),
-            }));
+          const list = snap.docs.map((d) => ({
+            id: d.id,
+            styleId: d.data().styleId || d.ref.parent?.parent?.id,
+            ...d.data(),
+          }));
+          if (list.length > 0) {
             setEntries(list);
             saveLocalProductionEntries(list);
+          } else if (snap.empty) {
+            setEntries([]);
+            saveLocalProductionEntries([]);
           }
         },
         () => {}
@@ -91,12 +103,15 @@ export default function Dashboard() {
     let unsub = () => {};
     try {
       unsub = onSnapshot(
-        query(collection(db, 'qualityChecks')),
+        collection(db, 'qualityChecks'),
         (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => d.data());
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          if (list.length > 0) {
             setChecks(list);
             saveLocalQualityChecks(list);
+          } else if (snap.empty) {
+            setChecks([]);
+            saveLocalQualityChecks([]);
           }
         },
         () => {}
@@ -298,8 +313,8 @@ export default function Dashboard() {
           <EmptyState title={t('কোনো চলমান স্টাইল নেই', 'No running styles')} hint={t('নতুন স্টাইল যোগ করে শুরু করুন।', 'Add a new style to get started.')} />
         ) : (
           <div className="space-y-4">
-            {filteredActiveStyles.slice(0, 8).map((s) => (
-              <Link to={`/production/${s.id}`} key={s.id} className="block">
+            {filteredActiveStyles.slice(0, 8).map((s, idx) => (
+              <Link to={`/production/${s.id}`} key={`${s.id}-${idx}`} className="block">
                 <div className="mb-1 flex items-center justify-between text-sm">
                   <span className="font-medium text-ink">
                     {s.styleNo} {s.styleName && <span className="text-ink-soft">— {s.styleName}</span>}
@@ -342,10 +357,10 @@ export default function Dashboard() {
             />
           </div>
           <div className="space-y-2">
-            {filteredNewOrderStyles.map((s) => (
+            {filteredNewOrderStyles.map((s, idx) => (
               <Link
                 to={`/production/${s.id}`}
-                key={s.id}
+                key={`${s.id}-${idx}`}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-paper px-3 py-2 text-sm hover:border-indigo/40"
               >
                 <span className="font-medium text-ink">

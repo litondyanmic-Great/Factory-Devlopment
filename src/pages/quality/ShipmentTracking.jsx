@@ -411,8 +411,8 @@ export default function ShipmentTracking() {
                       </tr>
                     </thead>
                     <tbody>
-                      {shipments.map((s) => (
-                        <tr key={s.id} className="border-b border-line last:border-0">
+                      {shipments.map((s, idx) => (
+                        <tr key={`${s.id || 'ship'}-${idx}`} className="border-b border-line last:border-0">
                           <td className="py-2 pr-4 text-ink-soft">{s.shipDate}</td>
                           <td className="py-2 pr-4 text-ink-soft">{s.poNo}{s.poNo && s.colour ? ' / ' : ''}{s.colour}</td>
                           <td className="py-2 pr-4 text-ink">{s.shippedQty}</td>
@@ -481,8 +481,8 @@ export default function ShipmentTracking() {
                 </tr>
               </thead>
               <tbody>
-                {filteredAllShipments.slice(0, 200).map((s) => (
-                  <tr key={s.id} className="border-b border-line last:border-0">
+                {filteredAllShipments.slice(0, 200).map((s, idx) => (
+                  <tr key={`${s.id || 'ship'}-${idx}`} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink">{s.styleNo}</td>
                     <td className="py-2 pr-4 text-ink-soft">{s.buyer}</td>
                     <td className="py-2 pr-4 text-ink-soft">{s.poNo}{s.poNo && s.colour ? ' / ' : ''}{s.colour}</td>

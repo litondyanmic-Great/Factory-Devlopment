@@ -25,39 +25,24 @@ export default function StylesList() {
 
     let unsub = () => {};
     try {
-      const q = query(collection(db, 'styles'), orderBy('createdAt', 'desc'));
+      const q = collection(db, 'styles');
       unsub = onSnapshot(
         q,
-        async (snap) => {
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setStyles(list);
-            saveLocalStyles(list);
-
-            // Auto-seed any local styles that are not yet in Firestore so all devices have them
-            const existingIds = new Set(list.map((s) => s.id));
-            const local = getLocalStyles();
-            for (const s of local) {
-              if (s.id && !existingIds.has(s.id)) {
-                try {
-                  await setDoc(doc(db, 'styles', s.id), { ...s, createdAt: serverTimestamp() }, { merge: true });
-                } catch {}
-              }
-            }
-          } else {
-            // Firestore styles collection is empty: populate with default styles
-            const local = getLocalStyles();
-            if (local.length > 0) {
-              setStyles(local);
-              for (const s of local) {
-                try {
-                  await setDoc(doc(db, 'styles', s.id), { ...s, createdAt: serverTimestamp() }, { merge: true });
-                } catch {}
-              }
-            } else {
-              setStyles([]);
-            }
-          }
+        (snap) => {
+          const list = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
+          list.sort((a, b) => {
+            const timeA = a.createdAt?.toMillis ? a.createdAt.toMillis() : new Date(a.createdAt || 0).getTime();
+            const timeB = b.createdAt?.toMillis ? b.createdAt.toMillis() : new Date(b.createdAt || 0).getTime();
+            return timeB - timeA;
+          });
+          const seen = new Set();
+          const uniqueList = list.filter((s) => {
+            if (!s.id || seen.has(s.id)) return false;
+            seen.add(s.id);
+            return true;
+          });
+          setStyles(uniqueList);
+          saveLocalStyles(uniqueList);
         },
         () => {
           setStyles(getLocalStyles());
@@ -192,9 +177,9 @@ export default function StylesList() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((s) => (
+              {filtered.map((s, idx) => (
                 <tr
-                  key={s.id}
+                  key={`${s.id}-${idx}`}
                   onClick={() => (window.location.href = `/production/${s.id}`)}
                   className="cursor-pointer border-b border-line last:border-0 hover:bg-paper"
                 >

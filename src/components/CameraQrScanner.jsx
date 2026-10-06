@@ -294,9 +294,9 @@ export default function CameraQrScanner({ onScan, onClose, autoCloseOnScan = fal
         <div className="space-y-1">
           <p className="text-[11px] text-ink-soft">{t('সাম্প্রতিক বান্ডেল (১-ক্লিক স্ক্যান):', 'Recent Bundles (1-click scan):')}</p>
           <div className="flex flex-wrap gap-1.5">
-            {quickBundles.map((b) => (
+            {quickBundles.map((b, idx) => (
               <button
-                key={b.id}
+                key={`${b.id || b.bundleNo || 'bundle'}-${idx}`}
                 type="button"
                 onClick={() => handleQuickClick(b.bundleNo)}
                 className="rounded border border-indigo/30 bg-indigo-soft/60 px-2 py-0.5 font-mono text-[11px] font-semibold text-indigo hover:bg-indigo hover:text-white transition"

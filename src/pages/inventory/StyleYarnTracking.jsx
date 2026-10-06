@@ -184,7 +184,14 @@ export default function StyleYarnTracking() {
       }
       if (e.type === 'issueToWinding') b.issuedWinding += q;
       if (e.type === 'issueToKnitting') b.issuedKnitting += q;
-      if (e.type === 'windingToKnitting') b.windingToKnitting += q;
+      if (
+        e.type === 'windingToKnitting' ||
+        (e.fromSection === 'winding' && (e.toSection === 'knitting' || e.destination === 'knitting'))
+      ) {
+        b.windingToKnitting += q;
+      } else if (e.fromSection === 'winding') {
+        b.issuedOtherFromWinding = (b.issuedOtherFromWinding || 0) + q;
+      }
       if (e.type === 'consumption') b.consumed += q;
       if (e.type === 'blockAdjustIn') b.adjustIn += q;
       if (e.type === 'blockAdjustOut') b.adjustOut += q;
@@ -195,8 +202,8 @@ export default function StyleYarnTracking() {
       ...b,
       balanceToReceive: b.ordered - b.received,
       atStore: b.received + b.adjustIn - b.adjustOut - b.issuedWinding - b.issuedKnitting - b.returned,
-      atWinding: b.issuedWinding - b.windingToKnitting,
-      readyForKnitting: b.issuedKnitting + b.windingToKnitting - b.consumed,
+      atWinding: Math.max(0, b.issuedWinding - b.windingToKnitting - (b.issuedOtherFromWinding || 0)),
+      readyForKnitting: Math.max(0, b.issuedKnitting + b.windingToKnitting - b.consumed),
     }));
   }, [ledger]);
 
@@ -211,11 +218,15 @@ export default function StyleYarnTracking() {
     const b = balances.find((x) => x.yarnItemId === yarnItemId);
     if (b) base.knitting = b.readyForKnitting;
     (ledger || [])
-      .filter((e) => e.yarnItemId === yarnItemId && e.type === 'sectionTransfer')
+      .filter((e) => e.yarnItemId === yarnItemId && (e.type === 'sectionTransfer' || e.type === 'windingToKnitting'))
       .forEach((e) => {
         const q = Number(e.qty || 0);
-        base[e.fromSection] = (base[e.fromSection] || 0) - q;
-        base[e.toSection] = (base[e.toSection] || 0) + q;
+        const from = e.fromSection;
+        const to = e.toSection || e.destinationSection || e.destination;
+        if (from && base[from] !== undefined) base[from] -= q;
+        if (to && base[to] !== undefined && to !== 'knitting') {
+          base[to] += q;
+        }
       });
     return STAGES.map((s) => ({ section: s.key, label: s.label, labelEn: s.labelEn, qty: base[s.key] || 0 })).filter(
       (s) => Math.abs(s.qty) > 0.001
@@ -765,8 +776,8 @@ export default function StyleYarnTracking() {
             <span className="rounded-full bg-amber px-2 py-0.5 text-xs text-white">{pendingApprovals.length}</span>
           </h2>
           <div className="space-y-2">
-            {pendingApprovals.map((req) => (
-              <div key={req.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
+            {pendingApprovals.map((req, idx) => (
+              <div key={`${req.id || 'req'}-${idx}`} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
                 <div>
                   <p className="font-medium text-ink">
                     {req.styleNo} · {req.yarnItemName} — {req.requestedQty} lb {t('চাওয়া হয়েছে', 'requested')}
@@ -824,8 +835,8 @@ export default function StyleYarnTracking() {
 
               {linkedYarnIds.length > 0 && (
                 <div className="mb-3 flex flex-wrap gap-2">
-                  {styleYarnItems.map((y) => (
-                    <span key={y.id} className="inline-flex items-center gap-1.5 rounded-full border border-indigo/30 bg-indigo-soft px-3 py-1 text-xs font-medium text-indigo">
+                  {styleYarnItems.map((y, idx) => (
+                    <span key={`${y.id || 'yarn'}-${idx}`} className="inline-flex items-center gap-1.5 rounded-full border border-indigo/30 bg-indigo-soft px-3 py-1 text-xs font-medium text-indigo">
                       {y.name}
                       <button type="button" onClick={() => unlinkYarnFromStyle(y.id)} className="text-indigo hover:text-red" title={t('সরিয়ে দিন', 'Remove')}>
                         ×
@@ -844,10 +855,10 @@ export default function StyleYarnTracking() {
                 />
                 {yarnPickerQuery.trim() && (
                   <div className="absolute z-10 mt-1 w-full space-y-1 rounded-md border border-line bg-surface p-1.5 shadow-md">
-                    {yarnPickerMatches.map((y) => (
+                    {yarnPickerMatches.map((y, idx) => (
                       <button
                         type="button"
-                        key={y.id}
+                        key={`${y.id || 'match'}-${idx}`}
                         onClick={() => linkYarnToStyle(y.id)}
                         className="block w-full rounded px-2 py-1.5 text-left text-sm text-ink hover:bg-paper"
                       >
@@ -902,8 +913,8 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={receiveForm.yarnItemId} onChange={(e) => setReceiveForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {styleYarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
+                    {styleYarnItems.map((y, idx) => (
+                      <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -957,8 +968,8 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={issueForm.yarnItemId} onChange={(e) => setIssueForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {styleYarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
+                    {styleYarnItems.map((y, idx) => (
+                      <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -1064,8 +1075,8 @@ export default function StyleYarnTracking() {
                   <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                     <select value={adjustForm.yarnItemId} onChange={(e) => setAdjustForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                       <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                      {styleYarnItems.map((y) => (
-                        <option key={y.id} value={y.id}>{y.name}</option>
+                      {styleYarnItems.map((y, idx) => (
+                        <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                       ))}
                     </select>
                   </Field>
@@ -1123,8 +1134,8 @@ export default function StyleYarnTracking() {
                     className={inputClass}
                   >
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {styleYarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
+                    {styleYarnItems.map((y, idx) => (
+                      <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -1204,8 +1215,8 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={transferForm.yarnItemId} onChange={(e) => setTransferForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {styleYarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
+                    {styleYarnItems.map((y, idx) => (
+                      <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -1257,8 +1268,8 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={returnForm.yarnItemId} onChange={(e) => setReturnForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {styleYarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
+                    {styleYarnItems.map((y, idx) => (
+                      <option key={`${y.id}-${idx}`} value={y.id}>{y.name}</option>
                     ))}
                   </select>
                 </Field>
@@ -1419,8 +1430,8 @@ export default function StyleYarnTracking() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ledger.map((e) => (
-                      <tr key={e.id} className="border-b border-line last:border-0">
+                    {ledger.map((e, idx) => (
+                      <tr key={`${e.id || 'yarn-ledger'}-${idx}`} className="border-b border-line last:border-0">
                         <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
                         <td className="py-2 pr-4 text-ink">{t(LEDGER_LABELS[e.type]?.bn, LEDGER_LABELS[e.type]?.en)}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.yarnItemName}</td>

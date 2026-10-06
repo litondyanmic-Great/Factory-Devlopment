@@ -81,9 +81,10 @@ export default function NewItem() {
     }
     setBusy(true);
     try {
-      const enteredBy = profile?.name || user?.email || 'Store In-Charge';
+      const enteredBy = profile?.name || user?.displayName || user?.email || 'Store In-Charge';
       const styleLabel = `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}`;
-      const generatedItemId = `item-${Date.now()}`;
+      const itemRef = doc(collection(db, 'inventoryItems'));
+      const generatedItemId = itemRef.id;
 
       const newItem = {
         id: generatedItemId,
@@ -142,9 +143,9 @@ export default function NewItem() {
         saveLocalAccLedger([accEntry, ...currentAcc]);
       }
 
-      // 2. Try Firestore sync in background
+      // 2. Persist to Firestore with consistent ID
       try {
-        const itemRef = await addDoc(collection(db, 'inventoryItems'), {
+        await setDoc(itemRef, {
           name: name.trim(),
           type,
           unit,
@@ -159,7 +160,7 @@ export default function NewItem() {
         if (type === 'yarn') {
           await addDoc(collection(db, 'styles', styleId, 'yarnLedger'), {
             type: 'dyeingOrder',
-            yarnItemId: itemRef.id,
+            yarnItemId: generatedItemId,
             yarnItemName: name.trim(),
             styleNo: style.styleNo,
             styleLabel,
@@ -173,7 +174,7 @@ export default function NewItem() {
         } else {
           await addDoc(collection(db, 'styles', styleId, 'accessoryLedger'), {
             type: 'order',
-            itemId: itemRef.id,
+            itemId: generatedItemId,
             itemName: name.trim(),
             unit,
             styleNo: style.styleNo,
